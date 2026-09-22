@@ -1305,7 +1305,8 @@ const storage = {
 // 雲端同步（Micy 帳號跨設備共享；使用固定同步代碼，密碼仍僅為本地閘門）
 const CLOUD_CODE_MICY = "micy";
 const LAST_SYNC_KEY = "lastSyncAt";  // 跨裝置同步：記錄本機最後一次同步時間
-// GitHub Pages 沒有後端；需要同步、OCR、股票搜尋和行情的功能仍使用原 WorkBuddy API。
+const BACKUP_REMINDER_KEY = "backupReminderShownDate";
+// GitHub Pages 沒有後端；同步、股票搜尋和行情仍使用原 WorkBuddy API，OCR 在瀏覽器本機執行。
 const BACKEND_ORIGIN = "https://micyfundledger.bj3.agentos-app.net";
 function apiUrl(path) { return BACKEND_ORIGIN + path; }
 function cloudPush(code, payload) {
@@ -2726,6 +2727,10 @@ function FundLedger() {
   const [uploadMenu, setUploadMenu] = useState(false);
   const [downloadMenu, setDownloadMenu] = useState(false);
   const csvInputRef = useRef(null);
+  const [backupReminderOpen, setBackupReminderOpen] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState(() =>
+    typeof Notification === "undefined" ? "unsupported" : Notification.permission
+  );
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -2746,6 +2751,31 @@ function FundLedger() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [uploadMenu, downloadMenu]);
   const PAGE_SIZE = 10;
+
+  // GitHub Pages 是靜態頁面，無法在頁面關閉時排程；因此在每週一、五開啟並解鎖帳本時提醒一次。
+  useEffect(() => {
+    if (!loaded || !isUnlocked) return;
+    const day = new Date().getDay();
+    if (day !== 1 && day !== 5) return;
+    const today = todayStr();
+    if (lsGet(BACKUP_REMINDER_KEY, "") === today) return;
+    lsSet(BACKUP_REMINDER_KEY, today);
+    setBackupReminderOpen(true);
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try { new Notification("基金帳本備份提醒", { body: "今天是備份日，請下載一份 JSON 備份。" }); } catch (e) {}
+    }
+  }, [loaded, isUnlocked]);
+
+  async function enableBackupNotifications() {
+    if (typeof Notification === "undefined") return;
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === "granted") {
+        new Notification("已開啟備份提醒", { body: "每週一、五開啟帳本時會提醒你備份。" });
+      }
+    } catch (e) {}
+  }
 
   useEffect(() => {
     if (!isUnlocked) return;
@@ -3597,7 +3627,7 @@ function FundLedger() {
       <div style={s.page}>
         <div style={s.lockScreen}>
           <div style={s.lockCard}>
-            <img src="/micy-icon.png" alt="" style={{ width: 56, height: 56, borderRadius: 14, objectFit: "cover", marginBottom: 10 }} />
+            <img src="./micy-icon.svg" alt="" style={{ width: 56, height: 56, borderRadius: 14, objectFit: "cover", marginBottom: 10 }} />
             <h1 style={s.h1}>Micy致富計畫</h1>
             <p style={{ fontSize: 12, color: "var(--text-4)", letterSpacing: "0.08em", margin: "0 0 18px", fontFamily: "'JetBrains Mono', monospace" }}>FUND LEDGER</p>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "8px 14px", background: "var(--inset)", borderRadius: 8 }}>
@@ -3650,9 +3680,37 @@ function FundLedger() {
   return (
     <div style={s.page}>
       <div style={s.body}>
+        {backupReminderOpen && (
+          <div style={s.modalBackdrop} onClick={() => setBackupReminderOpen(false)}>
+            <div style={{ ...s.modal, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+              <div style={s.modalHeader}>
+                <h2 style={s.modalTitle}>該備份基金帳本了</h2>
+                <button type="button" style={s.closeBtn} onClick={() => setBackupReminderOpen(false)}><X size={18} /></button>
+              </div>
+              <p style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.7, margin: "0 0 8px" }}>
+                今天是備份提醒日。建議先下載一份 JSON 備份，避免換裝置、清除瀏覽器資料或網站故障時遺失紀錄。
+              </p>
+              <p style={{ fontSize: 12, color: "var(--text-4)", lineHeight: 1.6, margin: "0 0 14px" }}>
+                提醒會在每週一、五開啟並解鎖帳本時出現一次。頁面關閉時，GitHub Pages 無法自行在背景排程提醒。
+              </p>
+              <div style={{ ...s.modalFooter, justifyContent: "flex-start", flexWrap: "wrap" }}>
+                <button type="button" style={s.saveBtn} className="fl-btn"
+                  onClick={() => { setBackupReminderOpen(false); exportBackup(); }}>
+                  立即下載 JSON 備份
+                </button>
+                {notificationPermission === "default" && (
+                  <button type="button" style={s.cancelBtn} onClick={enableBackupNotifications}>
+                    允許系統通知
+                  </button>
+                )}
+                <button type="button" style={s.cancelBtn} onClick={() => setBackupReminderOpen(false)}>稍後處理</button>
+              </div>
+            </div>
+          </div>
+        )}
         <header style={s.header}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src="/micy-icon.png" alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} />
+            <img src="./micy-icon.svg" alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} />
             <div>
               <h1 style={s.h1}>Micy致富計畫</h1>
               <p style={s.subtitle}>FUND LEDGER · 貼上通知即自動記帳</p>
