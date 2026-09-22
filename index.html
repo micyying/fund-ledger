@@ -21,6 +21,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 :root, [data-theme="dark"] {
   --bg:#10151C; --surface:#161D26; --inset:#0F141B; --row-alt:#141922; --header-row:#181F29; --hover:#1F2733;
@@ -2224,6 +2225,42 @@ function parseHoldingLines(text) {
   return [...map.values()].sort((a, b) => b.weight - a.weight).slice(0, 20);
 }
 
+// GitHub Pages 無法直接跨域呼叫 WorkBuddy 搜尋 API 時，仍保留常用標的的本機搜尋。
+const LOCAL_STOCK_DIRECTORY = [
+  ["hk00700", "騰訊控股", "腾讯控股"], ["hk00941", "中國移動", "中国移动"],
+  ["hk00005", "匯豐控股", "汇丰控股"], ["hk01299", "友邦保險", "友邦保险"],
+  ["hk09988", "阿里巴巴", "阿里巴巴"], ["hk03690", "美團", "美团"],
+  ["sh600570", "恒生電子", "恒生电子"], ["sh000001", "上證指數", "上证指数"],
+  ["sh000300", "滬深 300", "沪深 300"], ["sz399006", "創業板指", "创业板指"],
+  ["hkHSI", "恒生指數", "恒生指数"], ["hkHSCEI", "恒生國企指數", "恒生国企指数"],
+  ["hkHSTECH", "恒生科技指數", "恒生科技指数"], ["usINX", "標普 500", "标普 500"],
+  ["usIXIC", "納斯達克", "纳斯达克"], ["usDJI", "道瓊斯", "道琼斯"],
+].map(([code, name, simplified]) => ({ code, name, simplified }));
+
+function localStockSearch(term) {
+  const q = String(term || "").trim().toLowerCase();
+  if (!q) return [];
+  return LOCAL_STOCK_DIRECTORY.filter((x) =>
+    [x.code, x.name, x.simplified].some((v) => String(v).toLowerCase().includes(q))
+  ).map(({ code, name }) => ({ code, name }));
+}
+
+async function searchStockResults(term) {
+  const local = localStockSearch(term);
+  try {
+    const r = await fetch(apiUrl("/api/stocksearch?q=" + encodeURIComponent(term)));
+    const j = await r.json();
+    const remote = (j && Array.isArray(j.results)) ? j.results : [];
+    const seen = new Set();
+    return [...remote, ...local].filter((x) => {
+      if (!x || !x.code || seen.has(x.code)) return false;
+      seen.add(x.code); return true;
+    });
+  } catch (e) {
+    return local;
+  }
+}
+
 function HoldingsOcrModal({ fundName, onApply, onClose }) {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -2244,17 +2281,14 @@ function HoldingsOcrModal({ fundName, onApply, onClose }) {
     if (!files.length) return;
     setBusy(true); setErr(""); setProgress("");
     const collected = [];
+    let worker = null;
     try {
+      if (!window.Tesseract || !window.Tesseract.createWorker) throw new Error("OCR library unavailable");
+      worker = await Tesseract.createWorker("chi_tra+eng", 1);
       for (let i = 0; i < files.length; i++) {
         setProgress(`辨識中 ${i + 1}/${files.length}…`);
-        const dataUrl = await readAsDataUrl(files[i]);
-        const r = await fetch(apiUrl("/api/ocr"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: dataUrl }),
-        });
-        const j = await r.json();
-        if (j && j.text) collected.push(...parseHoldingLines(j.text));
+        const result = await worker.recognize(files[i]);
+        if (result && result.data && result.data.text) collected.push(...parseHoldingLines(result.data.text));
       }
       const merged = new Map();
       collected.forEach((r) => {
@@ -2272,17 +2306,17 @@ function HoldingsOcrModal({ fundName, onApply, onClose }) {
         for (let i = 0; i < list.length; i++) {
           let code = "";
           try {
-            const r = await fetch(apiUrl("/api/stocksearch?q=" + encodeURIComponent(list[i].name)));
-            const j = await r.json();
-            if (j && j.results && j.results.length) code = j.results[0].code;
+            const matches = await searchStockResults(list[i].name);
+            if (matches.length) code = matches[0].code;
           } catch (e2) {}
           list = list.map((x, k) => k === i ? { ...x, code, matching: false } : x);
           setRows(list);
         }
       }
     } catch (e3) {
-      setErr("辨識失敗，請稍後再試或改用手動輸入。");
+      setErr("本機 OCR 辨識失敗，請確認圖片清晰、網路可載入 OCR 模組，或改用手動輸入。");
     } finally {
+      if (worker) await worker.terminate().catch(() => {});
       setBusy(false); setProgress("");
     }
   }
@@ -2385,11 +2419,8 @@ function TrackingSetupModal({ fundCode, fundName, tracking, onSave, onClose }) {
     const term = q.trim();
     if (!term) return;
     setSearching(true);
-    try {
-      const r = await fetch(apiUrl("/api/stocksearch?q=" + encodeURIComponent(term)));
-      const j = await r.json();
-      setResults((j && j.results) || []);
-    } catch (e) { setResults([]); }
+    try { setResults(await searchStockResults(term)); }
+    catch (e) { setResults(localStockSearch(term)); }
     finally { setSearching(false); }
   }
 
