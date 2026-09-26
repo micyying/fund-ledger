@@ -2,14 +2,18 @@
 
 單檔 HTML 基金帳本，介面與本機資料由瀏覽器處理，頁面部署在 GitHub Pages；同步、行情、股票搜尋會連到原 WorkBuddy API，OCR 在瀏覽器本機執行。
 
+目前版本：**GitHub版 · v1.1.1**（2026-09-26）。本次更新修正主屏幕圖標白邊，並同步提供滿版 PNG 與 SVG。版本號會顯示在頁面頂部，點擊可查看版本資訊；WorkBuddy 版不共用此版本號。
+
 ## 檔案
 - `index.html` — 主程式（含「總覽改用即時預估淨值」修復）
+- `micy-icon.png` — 主屏幕與頁面內使用的滿版圖標
+- `micy-icon.svg` — 同款網頁圖標
 - `.nojekyll` — 避免 GitHub 用 Jekyll 重新處理，請一併上傳
 - `README.md` — 本說明
 
 ## 部署步驟（約 3 分鐘）
 1. 到 https://github.com/new 建立新 repository（例如 `fund-ledger`），**Public**（Private 也能開 Pages，但需付費方案），勾選 Add a README 可省略。
-2. 在 repo 頁面點 **Add file → Upload files**，把 `index.html` 與 `.nojekyll` 兩個檔拖進去，Commit。
+2. 在 repo 頁面點 **Add file → Upload files**，把 `index.html`、`micy-icon.png`、`micy-icon.svg` 與 `.nojekyll` 拖進去，Commit。
 3. 進 **Settings → Pages**，Source 選 `Deploy from a branch`，Branch 選 `main`、資料夾 `/ (root)`，按 Save。
 4. 等 1–2 分鐘，網址就會是：
    `https://<你的帳號>.github.io/fund-ledger/`
@@ -41,7 +45,7 @@ GitHub Pages 讓頁面網址穩定，但目前原 WorkBuddy API 沒有允許 Git
 
 ## 備份提醒
 
-每週一、五開啟並解鎖帳本時，頁面會彈出備份提醒；可直接下載 JSON 備份，也可按「允許系統通知」。由於 GitHub Pages 是靜態頁面，頁面完全關閉時無法在背景自行彈出通知。
+每週一、五開啟並解鎖帳本時，頁面會彈出備份提醒；可直接下載 JSON 備份，也可按「允許系統通知」。提醒使用本機日期，並按版本號記錄，升級後會重新判斷當天是否需要提醒。由於 GitHub Pages 是靜態頁面，頁面完全關閉時無法在背景自行彈出通知。
 
 ## 🔑 重要：資料搬遷（新網址不會自動帶舊資料）
 這支 app 的資料存在**瀏覽器的 localStorage，並且是「按網址隔離」**的。GitHub Pages 是全新網址＝全新 origin，所以**舊網址 `micyfundledger` 的資料不會自動出現**。請這樣搬：
