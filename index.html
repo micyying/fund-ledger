@@ -101,6 +101,15 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
   color:var(--text-2); cursor:pointer; transition:background .15s,border-color .15s,color .15s; }
 .fl-cal-nav:hover:not(:disabled) { background:var(--hover); border-color:var(--accent); color:var(--accent); }
 .fl-cal-nav:disabled { opacity:.35; cursor:not-allowed; }
+.fl-table-scroll { max-width:100%; overflow-x:auto; border:1px solid var(--border); border-radius:var(--r-md); -webkit-overflow-scrolling:touch; }
+.fl-data-table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+.fl-data-table th, .fl-data-table td { padding:9px 10px; border-bottom:1px solid var(--border-soft); text-align:right; white-space:nowrap; }
+.fl-data-table th { background:var(--header-row); color:var(--text-4); font-weight:600; }
+.fl-data-table td { background:var(--surface); color:var(--text-2); }
+.fl-data-table tr:last-child td { border-bottom:none; }
+.fl-data-table th:first-child, .fl-data-table td:first-child { position:sticky; left:0; z-index:1; text-align:left; }
+.fl-data-table th:first-child { z-index:2; }
+.fl-data-table td:first-child { box-shadow:2px 0 4px rgba(0,0,0,.06); }
 </style>
 <!-- 第三方頁面統計已移除；本頁不再向騰訊 Beacon 發送訪問資料。 -->
 </head>
@@ -223,13 +232,6 @@ const Wallet = ({ size = 24, color, strokeWidth = 2 }) => (
     <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
   </svg>
 );
-const Lightbulb = ({ size = 24, color, strokeWidth = 2 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || "currentColor"} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M9 18h6" />
-    <path d="M10 22h4" />
-    <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />
-  </svg>
-);
 const SwitchAcc = ({ size = 24, color, strokeWidth = 2 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || "currentColor"} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     <path d="M16 3l4 4-4 4" />
@@ -325,7 +327,7 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.2.1";
+const APP_VERSION = "v1.3.0";
 const APP_RELEASE_DATE = "2026-09-26";
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
@@ -736,7 +738,7 @@ function computeFloatingGains(holdings, priceHistory, navMap, todayVal, fundName
 }
 
 // ---------------------------------------------------------------------------
-// 理財建議：追蹤標的與淨值預估
+// 追蹤標的與淨值預估
 // 核心公式：預估淨值 = 最新已知淨值 × (1 + 股票倉位% × 標的組合漲跌%)
 // ---------------------------------------------------------------------------
 
@@ -823,38 +825,6 @@ function computeBasketChange(targets, quotes) {
   return { changePct: acc / wSum, hit, miss, weightSum: wSum };
 }
 
-// 組合多檔標的的日線為一條「加權合成走勢」（以首日出值 = 100 歸一化）。
-// 上游對部分美股 ETF 不提供歷史日線，故用多指數加權合成，確保能畫出近 6 個月走勢；
-// 同時也讓「十大持倉」模式能呈現一條整體走勢線。
-function combineBasketKline(targets, klines) {
-  if (!Array.isArray(targets) || !targets.length) return null;
-  const series = [];
-  for (const t of targets) {
-    const kl = klines && klines[t.code];
-    if (!kl || kl.length < 2) continue;
-    const base = kl[0].close;
-    if (!isFinite(base) || base <= 0) continue;
-    const map = {};
-    for (const r of kl) map[r.date] = r.close;
-    series.push({ weight: Number(t.weight) || 0, base, map });
-  }
-  if (!series.length) return null;
-  const dates = [...new Set(series.flatMap((s) => Object.keys(s.map)))].sort();
-  if (dates.length < 2) return null;
-  const out = [];
-  for (const d of dates) {
-    let acc = 0, wsum = 0;
-    for (const s of series) {
-      const c = s.map[d];
-      if (c === undefined || !isFinite(c)) continue;
-      acc += s.weight * (c / s.base - 1);
-      wsum += s.weight;
-    }
-    if (wsum <= 0) continue;
-    out.push({ date: d, close: 100 * (1 + acc / wsum) });
-  }
-  return out.length >= 2 ? out : null;
-}
 
 // 取得某基金最新已知淨值與其日期
 function latestKnownNav(fundCode, priceHistory, navMap) {
@@ -905,136 +875,6 @@ function estimateFundNav({ lastNav, lastNavDate, stockRatio, basketChangePct, to
   return { estNav, estChangePct, pendingDays, lastNav, lastNavDate };
 }
 
-// 產生參考訊號（僅供參考，非投資建議）
-function buildAdviceSignal({ estChangePct, kline, returnRate }) {
-  const closes = (kline || []).map((k) => k.close).filter((v) => isFinite(v));
-  let trend = null, trendPct = null;
-  if (closes.length >= 2) {
-    trendPct = ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100;
-    trend = trendPct > 1 ? "up" : trendPct < -1 ? "down" : "flat";
-  }
-  const rr = isFinite(returnRate) ? returnRate : null;
-  let tone = "neutral", text = "";
-
-  if (trend === "down" && rr !== null && rr > 5) {
-    tone = "warn";
-    text = `標的近期走弱（${fmtSigned(trendPct)}%），而你目前已有 ${rr.toFixed(1)}% 帳面獲利，可考慮分批減倉鎖定收益。`;
-  } else if (trend === "down" && rr !== null && rr < -5) {
-    tone = "neutral";
-    text = `標的近期走弱（${fmtSigned(trendPct)}%），目前帳面虧損 ${Math.abs(rr).toFixed(1)}%，宜觀望，避免在弱勢中加碼。`;
-  } else if (trend === "down") {
-    tone = "neutral";
-    text = `標的近期走弱（${fmtSigned(trendPct)}%），短線偏弱，可等待企穩訊號。`;
-  } else if (trend === "up" && rr !== null && rr < -3) {
-    tone = "pos";
-    text = `標的近期回暖（${fmtSigned(trendPct)}%），目前仍帳面虧損，續抱待回本或分批攤平皆可考慮。`;
-  } else if (trend === "up") {
-    tone = "pos";
-    text = `標的近期走強（${fmtSigned(trendPct)}%），趨勢向上，可續抱觀察。`;
-  } else if (trend === "flat") {
-    tone = "neutral";
-    text = `標的近期橫盤（${fmtSigned(trendPct)}%），方向未明，建議按既定計劃定額投入。`;
-  } else {
-    tone = "neutral";
-    text = "走勢資料不足，暫無法判斷趨勢。";
-  }
-  if (isFinite(estChangePct) && Math.abs(estChangePct) >= 1) {
-    text += ` 今日標的${estChangePct >= 0 ? "上漲" : "下跌"}帶動預估淨值${fmtSigned(estChangePct)}%。`;
-  }
-  return { tone, text, trend, trendPct };
-}
-
-// 走勢圖：依所選區間（交易日數）切片，可在「回報率 / 價格」間切換。
-// 回報模式以區間首日出值為基準計算累積報酬（%），價格模式顯示實際收盤。
-function TrendChart({ kline, color, rangeDays = 252, mode = "return", cost = null, estNav = null }) {
-  const W = 600, H = 178, padL = 48, padR = 12, padT = 18, padB = 26;
-  if (!kline || kline.length < 2) return null;
-  const win = kline.slice(-Math.max(2, rangeDays));
-  const n = win.length;
-  const isPct = mode === "return";
-  let vals = win.map((k) => k.close);
-  if (isPct) {
-    const base = vals[0];
-    vals = vals.map((v) => (base > 0 ? (v / base - 1) * 100 : 0));
-  }
-  // 買入成本線：將基金平均每單位成本，依「目前淨值 / 目前標的水位」換算為追蹤標的的等價水位，
-  // 使成本線能落在同一張走勢圖上，直觀對比目前是高于／低于成本。
-  let costVal = null, costLabel = null;
-  if (estNav && cost != null && isFinite(cost) && cost > 0 && estNav > 0) {
-    const I_first = win[0].close, I_last = win[n - 1].close;
-    if (isFinite(I_first) && I_first > 0 && isFinite(I_last) && I_last > 0) {
-      const costIndexLevel = I_last * (cost / estNav);
-      costVal = isPct ? (costIndexLevel / I_first - 1) * 100 : costIndexLevel;
-      costLabel = "成本 " + fmtNum(cost, 3);
-    }
-  }
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  if (isPct) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
-  if (costVal != null) { lo = Math.min(lo, costVal); hi = Math.max(hi, costVal); }
-  const span = (hi - lo) || 1;
-  const x = (i) => padL + (i / (n - 1)) * (W - padL - padR);
-  const y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
-  const lineColor = vals[n - 1] >= vals[0] ? "var(--pos)" : "var(--neg)";
-  const eff = color || lineColor;
-  // 網格線（含 0 基準線）
-  const GRID = 4;
-  const gridVals = [];
-  for (let i = 0; i <= GRID; i++) gridVals.push(lo + (span * i) / GRID);
-  // x 軸月份刻度（最多約 7 個）
-  const seen = new Set();
-  const xticks = [];
-  win.forEach((k, i) => {
-    const m = String(k.date).slice(0, 7);
-    if (!seen.has(m)) { seen.add(m); xticks.push({ i, m }); }
-  });
-  const stepX = Math.max(1, Math.ceil(xticks.length / 7));
-  const shownX = xticks.filter((_, idx) => idx % stepX === 0);
-  const baseY = isPct ? y(0) : y(lo);
-  const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const areaPts = `${padL},${baseY.toFixed(1)} ${pts} ${W - padR},${baseY.toFixed(1)}`;
-  const fmtAxis = (v) => isPct
-    ? (v > 0 ? "+" : "") + v.toFixed(0) + "%"
-    : fmtNum(v, v >= 1000 ? 0 : 2);
-  const last = win[n - 1];
-  const costY = costVal != null ? y(costVal) : null;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block" }} role="img" aria-label="走勢圖">
-      {gridVals.map((gv, i) => {
-        const yy = y(gv);
-        const isZero = isPct && Math.abs(gv) < 1e-6;
-        return (
-          <g key={i}>
-            <line x1={padL} y1={yy} x2={W - padR} y2={yy}
-              stroke={isZero ? "var(--border)" : "var(--border-soft)"}
-              strokeWidth={isZero ? 1 : 0.7}
-              strokeDasharray={isZero ? "none" : "2 3"} />
-            <text x={padL - 6} y={yy + 3} textAnchor="end" fontSize="9" fill="var(--text-faint)">{fmtAxis(gv)}</text>
-          </g>
-        );
-      })}
-      {costY != null && (
-        <g>
-          <line x1={padL} y1={costY} x2={W - padR} y2={costY}
-            stroke="var(--cost)" strokeWidth="1.2" strokeDasharray="5 3" />
-          <text x={W - padR} y={Math.min(Math.max(costY - 3, padT + 8), H - padB - 2)} textAnchor="end" fontSize="9" fill="var(--cost)" fontWeight="600">
-            {costLabel}
-          </text>
-        </g>
-      )}
-      <polyline points={areaPts} fill={eff} fillOpacity="0.10" stroke="none" />
-      <polyline points={pts} fill="none" stroke={eff} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={x(n - 1)} cy={y(vals[n - 1])} r="2.6" fill={eff} />
-      {shownX.map((t) => (
-        <text key={t.m} x={x(t.i)} y={H - 8} textAnchor="middle" fontSize="9" fill="var(--text-faint)">
-          {t.i === 0 ? t.m : t.m.slice(5) + "月"}
-        </text>
-      ))}
-      <text x={W - padR} y={padT - 6} textAnchor="end" fontSize="9" fill="var(--text-faint)">
-        截至 {String(last.date).slice(0, 10)}
-      </text>
-    </svg>
-  );
-}
 
 // 極簡 Markdown → HTML（僅供 AI 回覆渲染，已先做 HTML 轉義避免 XSS）
 function mdToHtml(src) {
@@ -2671,6 +2511,175 @@ function TrackingSetupModal({ fundCode, fundName, tracking, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
+// 資料表：持倉、平台與每月資金進出
+// ---------------------------------------------------------------------------
+function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
+  effectiveNavMap, estimatedNavMap, trackingMap, onTracking, quoteState, quoteAt, onRefresh, canRefresh }) {
+  const { holdingsByCcy, housesByCcy, monthsByCcy } = useMemo(() => {
+    const holdingsByCcy = {}, houseMap = {}, monthMap = {};
+    for (const [code, h] of Object.entries(holdings)) {
+      if (!h || h.units <= 0) continue;
+      const ccy = h.currency || DEFAULT_CCY;
+      const house = h.house || "未分類";
+      const valuation = valueHolding(h, effectiveNavMap[code]);
+      const cost = Number(h.cost) || 0;
+      const manual = Number(navMap[code]);
+      const estimated = Number(estimatedNavMap[code]);
+      const known = latestKnownNav(code, priceHistory, navMap);
+      const source = valuation.missing ? "缺淨值"
+        : Number.isFinite(estimated) && estimated > 0 ? "追蹤估算"
+        : Number.isFinite(manual) && manual > 0 ? "手填淨值"
+        : known && known.date ? `價格紀錄 ${known.date}` : "價格紀錄";
+      const row = {
+        code, name: fundNames[code] || "", house, units: h.units, cost,
+        nav: valuation.missing ? null : Number(effectiveNavMap[code]),
+        marketValue: valuation.marketValue,
+        gain: valuation.missing ? null : valuation.marketValue - cost,
+        source, tracked: !!trackingMap[code],
+      };
+      if (!holdingsByCcy[ccy]) holdingsByCcy[ccy] = [];
+      holdingsByCcy[ccy].push(row);
+      const key = `${ccy}\u0000${house}`;
+      if (!houseMap[key]) houseMap[key] = { ccy, house, count: 0, cost: 0, marketValue: 0, missing: 0 };
+      const group = houseMap[key];
+      group.count += 1;
+      group.cost += cost;
+      if (valuation.missing) group.missing += 1;
+      else group.marketValue += valuation.marketValue;
+    }
+    for (const rows of Object.values(holdingsByCcy)) {
+      rows.sort((a, b) => (b.marketValue ?? -1) - (a.marketValue ?? -1));
+    }
+    const housesByCcy = {};
+    for (const group of Object.values(houseMap)) {
+      if (!housesByCcy[group.ccy]) housesByCcy[group.ccy] = [];
+      housesByCcy[group.ccy].push(group);
+    }
+    for (const rows of Object.values(housesByCcy)) rows.sort((a, b) => b.cost - a.cost);
+
+    for (const t of transactions) {
+      if (!t || !t.date || !["buy", "sell", "dividend"].includes(t.type)) continue;
+      const ccy = t.currency || DEFAULT_CCY;
+      const month = String(t.date).slice(0, 7);
+      const key = `${ccy}\u0000${month}`;
+      if (!monthMap[key]) monthMap[key] = { ccy, month, buy: 0, sell: 0, dividend: 0 };
+      const amount = Number(t.amount) || 0;
+      const fee = Number(t.fee) || 0;
+      if (t.type === "buy") monthMap[key].buy += amount + fee;
+      if (t.type === "sell") monthMap[key].sell += amount - fee;
+      if (t.type === "dividend") monthMap[key].dividend += amount - fee;
+    }
+    const monthsByCcy = {};
+    for (const row of Object.values(monthMap)) {
+      row.net = row.sell + row.dividend - row.buy;
+      if (!monthsByCcy[row.ccy]) monthsByCcy[row.ccy] = [];
+      monthsByCcy[row.ccy].push(row);
+    }
+    for (const rows of Object.values(monthsByCcy)) rows.sort((a, b) => b.month.localeCompare(a.month));
+    return { holdingsByCcy, housesByCcy, monthsByCcy };
+  }, [transactions, holdings, fundNames, navMap, priceHistory, effectiveNavMap, estimatedNavMap, trackingMap]);
+
+  const blockStyle = { ...s.ledgerSection, padding: 16, marginBottom: 16 };
+  const titleStyle = { margin: "0 0 10px", fontSize: 14, color: "var(--text)", fontWeight: 600 };
+  const ccyStyle = { margin: "14px 0 7px", fontSize: 11, color: "var(--text-4)", fontWeight: 600 };
+  const empty = <p style={{ margin: 0, fontSize: 12, color: "var(--text-4)" }}>暫無資料</p>;
+  const gainColor = (n) => n == null ? "var(--text-4)" : n >= 0 ? POS_COLOR : NEG_COLOR;
+
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+        <div style={{ ...s.sectionTitle, marginBottom: 0 }}><span style={s.sectionBar} />資料表</div>
+        {canRefresh && <button type="button" className="fl-ghost" style={{ ...s.ghostBtn, fontSize: 11, flexShrink: 0 }}
+          disabled={quoteState === "loading"} onClick={onRefresh}>
+          <RefreshCw size={13} /> {quoteState === "loading" ? "更新中" : "更新行情"}
+        </button>}
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--text-4)", lineHeight: 1.5, margin: "0 0 16px" }}>
+        各幣種分開列示；手機可左右滑動表格。估值按最新可用淨值計算，未必是今日結算價。
+        {quoteState === "ok" && quoteAt ? ` 行情更新：${quoteAt.toLocaleString("zh-TW")}` : ""}
+        {quoteState === "error" ? " 行情更新失敗，會沿用已儲存的淨值。" : ""}
+      </p>
+
+      <section style={blockStyle}>
+        <h2 style={titleStyle}>基金持倉</h2>
+        {Object.keys(holdingsByCcy).length === 0 ? empty : Object.entries(holdingsByCcy).map(([ccy, rows]) => (
+          <div key={ccy}>
+            <div style={ccyStyle}>{ccy} · {rows.length} 檔</div>
+            <div className="fl-table-scroll">
+              <table className="fl-data-table" style={{ minWidth: 750 }} aria-label={`${ccy} 基金持倉`}>
+                <thead><tr><th>基金</th><th>浮動盈虧</th><th>預估市值</th><th>持倉成本</th><th>單位數</th><th>淨值</th><th>平台</th><th>來源／追蹤</th></tr></thead>
+                <tbody>{rows.map((row) => (
+                  <tr key={row.code}>
+                    <td><div style={{ ...s.mono, fontWeight: 600, color: "var(--text)" }}>{row.code}</div>
+                      {row.name && <div style={{ maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-4)", fontSize: 10 }} title={row.name}>{row.name}</div>}</td>
+                    <td style={{ color: gainColor(row.gain), fontWeight: 600 }}>{row.gain == null ? "—" : fmtSignedMoney(row.gain, ccy)}</td>
+                    <td>{row.marketValue == null ? "缺淨值" : fmtMoney(row.marketValue, ccy)}</td>
+                    <td>{fmtMoney(row.cost, ccy)}</td>
+                    <td>{fmtNum(row.units, 3)}</td>
+                    <td>{row.nav == null ? "—" : fmtNum(row.nav, 4)}</td>
+                    <td>{row.house}</td>
+                    <td><span style={{ color: "var(--text-4)", marginRight: 8 }}>{row.source}</span>
+                      <button type="button" className="fl-realized-btn" style={{ color: "var(--accent)", fontSize: 11 }}
+                        onClick={() => onTracking(row.code)}>{row.tracked ? "調整追蹤" : "設定追蹤"}</button></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section style={blockStyle}>
+        <h2 style={titleStyle}>銀行／平台彙總</h2>
+        <p style={{ margin: "0 0 7px", fontSize: 11, color: "var(--text-4)" }}>依每檔基金最後一筆交易所記錄的平台歸類。</p>
+        {Object.keys(housesByCcy).length === 0 ? empty : Object.entries(housesByCcy).map(([ccy, rows]) => (
+          <div key={ccy}>
+            <div style={ccyStyle}>{ccy}</div>
+            <div className="fl-table-scroll">
+              <table className="fl-data-table" style={{ minWidth: 540 }} aria-label={`${ccy} 平台彙總`}>
+                <thead><tr><th>平台</th><th>基金數</th><th>浮動盈虧</th><th>預估市值</th><th>持倉成本</th></tr></thead>
+                <tbody>{rows.map((row) => {
+                  const gain = row.missing ? null : row.marketValue - row.cost;
+                  return <tr key={row.house}>
+                    <td style={{ fontWeight: 600 }}>{row.house}</td>
+                    <td>{row.count}</td>
+                    <td style={{ color: gainColor(gain), fontWeight: 600 }}>{gain == null ? "—" : fmtSignedMoney(gain, ccy)}</td>
+                    <td>{row.missing ? `缺 ${row.missing} 檔淨值` : fmtMoney(row.marketValue, ccy)}</td>
+                    <td>{fmtMoney(row.cost, ccy)}</td>
+                  </tr>;
+                })}</tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section style={blockStyle}>
+        <h2 style={titleStyle}>每月資金進出</h2>
+        <p style={{ margin: "0 0 7px", fontSize: 11, color: "var(--text-4)" }}>淨流入＝贖回收入＋配息－申購支出；交易費用已計入。這是現金流，並非投資報酬。</p>
+        {Object.keys(monthsByCcy).length === 0 ? empty : Object.entries(monthsByCcy).map(([ccy, rows]) => (
+          <div key={ccy}>
+            <div style={ccyStyle}>{ccy} · {rows.length} 個月</div>
+            <div className="fl-table-scroll" style={{ maxHeight: 420, overflowY: "auto" }}>
+              <table className="fl-data-table" style={{ minWidth: 560 }} aria-label={`${ccy} 每月資金進出`}>
+                <thead><tr><th>月份</th><th>淨流入</th><th>申購支出</th><th>贖回收入</th><th>配息</th></tr></thead>
+                <tbody>{rows.map((row) => <tr key={row.month}>
+                  <td style={{ ...s.mono, fontWeight: 600 }}>{row.month}</td>
+                  <td style={{ color: gainColor(row.net), fontWeight: 600 }}>{fmtSignedMoney(row.net, ccy)}</td>
+                  <td>{fmtMoney(row.buy, ccy)}</td>
+                  <td>{fmtMoney(row.sell, ccy)}</td>
+                  <td>{fmtMoney(row.dividend, ccy)}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 function FundLedger() {
@@ -2707,12 +2716,8 @@ function FundLedger() {
   const [showMvModal, setShowMvModal] = useState(false);  // 預估市值明細彈窗
   const [trackFund, setTrackFund] = useState(null);   // 正在設定追蹤的基金代碼
   const [quotes, setQuotes] = useState({});           // 行情快照
-  const [klines, setKlines] = useState({});           // 近 N 日走勢
   const [quoteState, setQuoteState] = useState("idle"); // idle | loading | ok | error
   const [quoteAt, setQuoteAt] = useState(null);       // 最後更新時間
-  // 走勢圖共用控制：時間區間（交易日數）與顯示模式（回報/價格）
-  const [trendRange, setTrendRange] = useState(252);   // 預設 1 年
-  const [trendMode, setTrendMode] = useState("price"); // return=回報率 / price=價格（預設顯示價格）
   const [exportContent, setExportContent] = useState(null);
   const [exportTitle, setExportTitle] = useState("");
   const [copied, setCopied] = useState(false);
@@ -2772,7 +2777,10 @@ function FundLedger() {
   const [activeMonth, setActiveMonth] = useState("__all__");
   const [theme, setTheme] = useState(lsGet("fundLedger_theme", "dark"));
   const TAB_KEY = "fundLedger_activeTab";
-  const [activeTab, setActiveTab] = useState(lsGet(TAB_KEY, "overview"));
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = lsGet(TAB_KEY, "overview");
+    return saved === "advice" ? "tables" : saved;
+  });
   useEffect(() => { lsSet(TAB_KEY, activeTab); }, [activeTab]);
   const GAIN_KEY = "fundLedger_gainMode";
   const [gainMode, setGainMode] = useState(lsGet(GAIN_KEY, "realized"));
@@ -2967,18 +2975,11 @@ function FundLedger() {
     [holdings]
   );
 
-  // ---- 理財建議：行情抓取與淨值預估 ----
+  // ---- 既有追蹤設定只用於總覽的行情估值 ----
   // 有交易紀錄且「有設定追蹤標的」的基金（含已清倉，方便持續觀察）
   const trackedCodes = useMemo(
     () => Object.keys(holdings)
       .filter((c) => trackingMap[c])
-      .sort((a, b) => a.localeCompare(b, "zh-TW")),
-    [holdings, trackingMap]
-  );
-  // 尚未設定追蹤的基金（含已清倉）
-  const untrackedCodes = useMemo(
-    () => Object.keys(holdings)
-      .filter((c) => !trackingMap[c])
       .sort((a, b) => a.localeCompare(b, "zh-TW")),
     [holdings, trackingMap]
   );
@@ -3005,70 +3006,15 @@ function FundLedger() {
         setQuoteAt(new Date());
       } else { setQuoteState("error"); }
     } catch (e) { setQuoteState("error"); }
-    // 抓最長約 5 年（1300 個交易日）日線；前端再依所選區間切片。
-    // 注意：騰訊對美股指數僅提供約 1300 日內的日線，故統一以 1300 為上限以確保籃子合成不漏掉美股。
-    codes.forEach(async (c) => {
-      try {
-        const r = await fetch(apiUrl(`/api/kline?code=${encodeURIComponent(c)}&days=1300`));
-        const j = await r.json();
-        if (j && Array.isArray(j.kline)) setKlines((prev) => ({ ...prev, [c]: j.kline }));
-      } catch (e) {}
-    });
-  }, [klines]);
+  }, []);
 
-  // 進入理財建議 / 資產總覽分頁時自動抓一次行情（總覽需即時預估淨值）
+  // 總覽與資料表需要同一組即時估值。
   const quoteKey = quoteCodes.join(",");
   useEffect(() => {
-    if ((activeTab !== "advice" && activeTab !== "overview") || !quoteKey) return;
+    if ((activeTab !== "tables" && activeTab !== "overview") || !quoteKey) return;
     fetchQuotes(quoteKey.split(","));
     // eslint-disable-next-line
   }, [activeTab, quoteKey]);
-
-  // 逐檔計算預估結果
-  const adviceRows = useMemo(() => {
-    const today = todayStr();
-    return trackedCodes.map((fc) => {
-      const tk = trackingMap[fc];
-      const h = holdings[fc];
-      const known = latestKnownNav(fc, priceHistory, navMap);
-      const basket = computeBasketChange(tk.targets, quotes);
-      const est = known ? estimateFundNav({
-        lastNav: known.price,
-        lastNavDate: known.date,
-        stockRatio: tk.stockRatio,
-        basketChangePct: basket ? basket.changePct : (tk.stockRatio === 0 ? 0 : null),
-        today,
-      }) : null;
-      // 主標的（權重最大者）用於顯示與走勢圖
-      const main = (tk.targets || []).slice().sort((a, b) => (b.weight || 0) - (a.weight || 0))[0] || null;
-      const mainQuote = main ? quotes[main.code] : null;
-      // 走勢圖：MSCI World ETF（usURTH/usACWI）上游不提供歷史日線，改以多指數合成籃（GLOBAL_BASKET）呈現；
-      // 一般組合模式用加權合成；單一指數模式用該指數日線。
-      const isMsciProxy = (tk.targets || []).some((t) => t.code === "usURTH" || t.code === "usACWI");
-      const kline = isMsciProxy
-        ? combineBasketKline(GLOBAL_BASKET, klines)
-        : (tk.mode === "basket" && (tk.targets || []).length)
-          ? combineBasketKline(tk.targets, klines)
-          : (main ? (klines[main.code] || null) : null);
-      const cost = h ? h.cost : 0;
-      const units = h ? h.units : 0;
-      const returnRate = cost > 0 && est ? ((est.estNav * units - cost) / cost) * 100 : null;
-      const signal = buildAdviceSignal({
-        estChangePct: est ? est.estChangePct : NaN,
-        kline,
-        returnRate,
-      });
-      return {
-        fundCode: fc,
-        fundName: fundNames[fc] || "",
-        tracking: tk, main, mainQuote, kline, est, basket, signal,
-        units, cost, returnRate,
-        currency: (h && h.currency) || DEFAULT_CCY,
-        estValue: est ? est.estNav * units : null,
-        estGain: est && cost > 0 ? est.estNav * units - cost : null,
-      };
-    });
-  }, [trackedCodes, trackingMap, holdings, priceHistory, navMap, quotes, klines, fundNames]);
 
   // 即時預估淨值（estNav）：對「已綁定追蹤標的 + 抓到行情」的持倉，
   // 用 最新已知淨值 × (1 + 股票倉位% × 標的漲跌%) 推算，作為總覽「預估市值 / 浮動盈虧」的標準。
@@ -3103,33 +3049,6 @@ function FundLedger() {
     }
     return { ...map, ...estNavByCode };
   }, [holdings, priceHistory, navMap, estNavByCode]);
-
-  // 一鍵為所有未設定的基金套用推薦標的
-  // 將「推薦結果」轉為可儲存的追蹤設定；GLOBAL_BASKET_CODE 哨兵會展開為多指數籃，
-  // 避免把哨兵當成真實行情代碼而抓不到日線。
-  function trackingFromGuess(g) {
-    if (g.code === GLOBAL_BASKET_CODE) {
-      return { mode: "basket", stockRatio: g.ratio, targets: GLOBAL_BASKET.map((x) => ({ ...x })), updatedAt: todayStr() };
-    }
-    return {
-      mode: "index",
-      stockRatio: g.ratio,
-      targets: g.code ? [{ code: g.code, name: g.name, weight: 100 }] : [],
-      updatedAt: todayStr(),
-    };
-  }
-
-  function autoBindAll() {
-    const next = { ...trackingMap };
-    let n = 0;
-    untrackedCodes.forEach((fc) => {
-      const g = guessIndexForFund(fundNames[fc] || fc);
-      if (!g) return;
-      next[fc] = trackingFromGuess(g);
-      n++;
-    });
-    if (n > 0) persistTracking(next);
-  }
 
   function saveTracking(fundCode, cfg) {
     const next = { ...trackingMap };
@@ -4075,308 +3994,12 @@ function FundLedger() {
             <CalendarGrid transactions={transactions} fundNames={fundNames} holdings={holdings} navMap={navMap} priceHistory={priceHistory} gainMode={gainMode} s={s} />
           </>
         )}
-        {activeTab === "advice" && (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 10 }}>
-              <div style={{...s.sectionTitle, marginBottom: 0}}><span style={s.sectionBar} />理財建議</div>
-              <button type="button" className="fl-ghost"
-                style={{ ...s.ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}
-                disabled={quoteState === "loading" || !quoteCodes.length}
-                onClick={() => { setKlines({}); fetchQuotes(quoteCodes); }}>
-                <RefreshCw size={14} /> {quoteState === "loading" ? "更新中" : "刷新行情"}
-              </button>
-            </div>
-
-            {/* 行情狀態列 */}
-            {trackedCodes.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 11.5, color: "var(--text-4)", flexWrap: "wrap" }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: quoteState === "ok" ? "var(--pos)" : quoteState === "error" ? "var(--neg)" : "var(--text-faint)" }} />
-                {quoteState === "ok" && quoteAt && <span>行情已更新 · {quoteAt.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })}</span>}
-                {quoteState === "loading" && <span>正在取得行情…</span>}
-                {quoteState === "error" && <span style={{ color: "var(--neg)" }}>行情暫時無法取得，請稍後刷新</span>}
-                {quoteState === "idle" && <span>尚未取得行情</span>}
-              </div>
-            )}
-
-            {/* 區塊 1：今日預估 */}
-            <CollapsibleSection title="今日淨值預估" s={s}>
-              {adviceRows.length === 0 ? (
-                <>
-                  <p style={{ fontSize: 12.5, color: "var(--text-4)", lineHeight: 1.7, margin: "0 0 14px" }}>
-                    為基金綁定追蹤標的（指數或十大持倉），系統便會抓取即時行情，
-                    依「<strong style={{ color: "var(--text-3)" }}>股票倉位 × 標的漲跌 + 債券／現金部分</strong>」推算今日淨值。
-                  </p>
-                {untrackedCodes.length > 0 && (
-                  <button type="button" style={{ ...s.addBtn, display: "inline-flex", alignItems: "center", gap: 6 }} onClick={autoBindAll}>
-                    <Target size={15} /> 一鍵綁定推薦標的（{untrackedCodes.length} 檔）
-                  </button>
-                )}
-                {untrackedCodes.length === 0 && (
-                  <div style={{ textAlign: "center", padding: "20px 0", color: "var(--text-faint)", fontSize: 12 }}>
-                    <Lightbulb size={32} />
-                    <p style={{ margin: "8px 0 0" }}>目前沒有持倉基金</p>
-                  </div>
-                )}
-              </>
-            ) : (
-                <>
-                  <p style={{ fontSize: 11, color: "var(--text-4)", margin: "0 0 14px" }}>
-                    預估淨值 = 最新已知淨值 ×（1 + 股票倉位 × 標的漲跌）
-                  </p>
-                {adviceRows.map((r) => {
-                  const up = r.est ? r.est.estChangePct >= 0 : true;
-                  const col = r.est ? (r.est.estChangePct >= 0 ? "var(--pos)" : "var(--neg)") : "var(--text-4)";
-                  return (
-                    <div key={r.fundCode} style={{ background: "var(--inset)", border: "1px solid var(--border-soft)", borderRadius: "var(--r-md)", padding: "12px 14px", marginBottom: 10, ...(r.units <= 0 ? { opacity: 0.7 } : {}) }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-                        <div style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
-                          <span style={{ ...s.mono, fontWeight: 600, fontSize: 13, color: "var(--text)" }}>{r.fundCode}</span>
-                          {r.fundName && <span style={{ fontSize: 11, color: "var(--text-4)", overflow: "hidden", textOverflow: "ellipsis" }}>{r.fundName}</span>}
-                          {r.units <= 0 && <span style={{ fontSize: 10, color: "var(--text-faint)", background: "var(--surface)", padding: "1px 6px", borderRadius: 3, border: "1px solid var(--border-soft)" }}>已清倉</span>}
-                        </div>
-                        <button type="button" className="fl-realized-btn"
-                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--accent)" }}
-                          onClick={() => setTrackFund(r.fundCode)}>設定 ›</button>
-                      </div>
-
-                      {/* 標的行情 */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 11.5, flexWrap: "wrap" }}>
-                        <Target size={12} color="var(--text-faint)" />
-                        {r.tracking.stockRatio === 0 ? (
-                          <span style={{ color: "var(--text-4)" }}>債券／現金型 · 股票倉位 0%</span>
-                        ) : (
-                          <>
-                            <span style={{ color: "var(--text-3)" }}>
-                              {r.main ? (r.main.name || r.main.code) : "未設定標的"}
-                              {r.tracking.mode === "basket" && (r.tracking.targets || []).length > 1
-                                ? ` 等 ${r.tracking.targets.length} 檔` : ""}
-                            </span>
-                            {r.mainQuote ? (
-                              <span style={{ ...s.mono, color: r.mainQuote.changePct >= 0 ? "var(--pos)" : "var(--neg)", fontWeight: 600 }}>
-                                {fmtSigned(r.mainQuote.changePct)}%
-                              </span>
-                            ) : (
-                              <span style={{ color: "var(--text-faint)" }}>—</span>
-                            )}
-                            <span style={{ color: "var(--text-faint)" }}>· 倉位 {r.tracking.stockRatio}%</span>
-                          </>
-                        )}
-                      </div>
-
-                      {/* 預估數值：即時預估 / 銀行已知 / 成本均價 三欄 + 兩組漲幅 */}
-                      {r.est ? (() => {
-                        const avgCost = (r.units && r.units > 0) ? r.cost / r.units : null;
-                        const knownNav = r.est.lastNav;
-                        const knownDate = r.est.lastNavDate ? r.est.lastNavDate.slice(5) : "";
-                        const estVsCostPct = (avgCost && avgCost > 0) ? ((r.est.estNav - avgCost) / avgCost) * 100 : null;
-                        const knownVsCostPct = (avgCost && avgCost > 0 && knownNav) ? ((knownNav - avgCost) / avgCost) * 100 : null;
-                        return (
-                        <>
-                          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                            {/* 即時預估（網頁抓取推算） */}
-                            <div style={{ flex: "1 1 0", minWidth: 80 }}>
-                              <div style={{ fontSize: 10, color: "var(--text-4)", marginBottom: 2 }}>即時預估<span style={{ color: "var(--text-faint)" }}>（行情推算）</span></div>
-                              <div style={{ ...s.mono, fontSize: 18, fontWeight: 700, color: "var(--text)", lineHeight: 1.1 }}>
-                                {fmtNum(r.est.estNav, 4)}
-                              </div>
-                              <div style={{ ...s.mono, fontSize: 11, color: estVsCostPct !== null ? (estVsCostPct >= 0 ? "var(--pos)" : "var(--neg)") : "var(--text-faint)", marginTop: 2 }}>
-                                {estVsCostPct !== null ? `vs 成本 ${fmtSigned(estVsCostPct)}%` : "—"}
-                              </div>
-                            </div>
-                            {/* 銀行已知（你填入的） */}
-                            <div style={{ flex: "1 1 0", minWidth: 80, textAlign: "center" }}>
-                              <div style={{ fontSize: 10, color: "var(--text-4)", marginBottom: 2 }}>銀行已知<span style={{ color: "var(--text-faint)" }}>（手填）</span></div>
-                              <div style={{ ...s.mono, fontSize: 16, fontWeight: 600, color: "var(--text-2)", lineHeight: 1.1 }}>
-                                {knownNav ? fmtNum(knownNav, 4) : "—"}
-                              </div>
-                              <div style={{ ...s.mono, fontSize: 11, color: knownVsCostPct !== null ? (knownVsCostPct >= 0 ? "var(--pos)" : "var(--neg)") : "var(--text-faint)", marginTop: 2 }}>
-                                {knownVsCostPct !== null ? `vs 成本 ${fmtSigned(knownVsCostPct)}%` : (knownDate || "—")}
-                              </div>
-                            </div>
-                            {/* 成本均價 */}
-                            <div style={{ flex: "1 1 0", minWidth: 80, textAlign: "right" }}>
-                              <div style={{ fontSize: 10, color: "var(--text-4)", marginBottom: 2 }}>成本均價<span style={{ color: "var(--text-faint)" }}>（買入）</span></div>
-                              <div style={{ ...s.mono, fontSize: 16, fontWeight: 600, color: "var(--cost)", lineHeight: 1.1 }}>
-                                {avgCost !== null ? fmtNum(avgCost, 4) : "—"}
-                              </div>
-                              {r.estGain !== null && (
-                                <div style={{ ...s.mono, fontSize: 11, color: r.estGain >= 0 ? "var(--pos)" : "var(--neg)", marginTop: 2 }}>
-                                  總盈虧 {r.estGain >= 0 ? "+" : ""}{fmtMoney(r.estGain, r.currency)}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          {/* 資料來源與時間 */}
-                          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, flexWrap: "wrap", marginTop: 4 }}>
-                            {r.main && r.main.code && (
-                              <a href={"https://gu.qq.com/" + r.main.code} target="_blank" rel="noopener noreferrer"
-                                style={{ color: "var(--accent)", textDecoration: "underline", cursor: "pointer", fontWeight: 500 }}>
-                                行情來源 ↗
-                              </a>
-                            )}
-                            {quoteAt && <span style={{ color: "var(--text-faint)" }}>抓取時間 {quoteAt.toLocaleString("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>}
-                            {r.est.lastNavDate && (
-                              <span style={{ color: "var(--text-faint)" }}>· 銀行已知 {r.est.lastNavDate}</span>
-                            )}
-                          </div>
-                          {r.est.pendingDays > 0 && (
-                            <div style={{ marginTop: 8, padding: "6px 9px", background: "var(--warn-border)", borderRadius: "var(--r-sm)", fontSize: 10.5, color: "var(--warn)", lineHeight: 1.5 }}>
-                              你手上的淨值為 {r.est.lastNavDate}，距今尚有 {r.est.pendingDays} 個交易日待結算，實際成交價可能以當日或次日收盤淨值計。
-                            </div>
-                          )}
-                          {r.basket && r.basket.miss > 0 && (
-                            <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--text-faint)" }}>
-                              {r.basket.miss} 檔標的無行情，已按其餘 {r.basket.hit} 檔（權重 {r.basket.weightSum.toFixed(0)}%）歸一化估算。
-                            </div>
-                          )}
-                        </>
-                        );
-                      })() : (
-                        <p style={{ fontSize: 11.5, color: "var(--text-faint)", margin: 0 }}>
-                          {latestKnownNav(r.fundCode, priceHistory, navMap)
-                            ? "等待行情資料…" : "缺少該基金的淨值紀錄，請先在資產總覽填入當前淨值。"}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </>
-            )}
-            </CollapsibleSection>
-
-            {/* 區塊 2：走勢（可切換區間與回報/價格） */}
-            {adviceRows.some((r) => r.kline && r.kline.length >= 2) && (
-              <CollapsibleSection title="追蹤標的走勢" s={s}
-                right={<span style={{ fontSize: 11, color: "var(--text-faint)" }}>每檔取其主要追蹤標的之收盤</span>}>
-                {/* 共用控制列：時間區間 + 回報/價格 切換 */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-                  <div style={{ display: "inline-flex", background: "var(--inset)", borderRadius: "var(--r-sm)", padding: 2 }}>
-                    {[
-                      { label: "3個月", days: 65 },
-                      { label: "6個月", days: 126 },
-                      { label: "1年", days: 252 },
-                      { label: "3年", days: 756 },
-                      { label: "5年", days: 1260 },
-                    ].map((rg) => (
-                      <button key={rg.days} type="button" onClick={() => setTrendRange(rg.days)}
-                        style={{
-                          border: "none",
-                          background: trendRange === rg.days ? "var(--accent)" : "transparent",
-                          color: trendRange === rg.days ? "#fff" : "var(--text-3)",
-                          fontSize: 12, padding: "5px 10px", borderRadius: "var(--r-sm)", cursor: "pointer",
-                        }}>
-                        {rg.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ display: "inline-flex", background: "var(--inset)", borderRadius: "var(--r-sm)", padding: 2 }}>
-                    {[
-                      { label: "回報", mode: "return" },
-                      { label: "價格", mode: "price" },
-                    ].map((mm) => (
-                      <button key={mm.mode} type="button" onClick={() => setTrendMode(mm.mode)}
-                        style={{
-                          border: "none",
-                          background: trendMode === mm.mode ? "var(--accent)" : "transparent",
-                          color: trendMode === mm.mode ? "#fff" : "var(--text-3)",
-                          fontSize: 12, padding: "5px 10px", borderRadius: "var(--r-sm)", cursor: "pointer",
-                        }}>
-                        {mm.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {adviceRows.filter((r) => r.kline && r.kline.length >= 2).map((r) => {
-                  const win = r.kline.slice(-Math.max(2, trendRange));
-                  const cs = win.map((k) => k.close);
-                  const chg = ((cs[cs.length - 1] - cs[0]) / cs[0]) * 100;
-                  const c = chg >= 0 ? "var(--pos)" : "var(--neg)";
-                  const d0 = win[0].date, d1 = win[win.length - 1].date;
-                  const ccy = r.currency || "";
-                  const isBasket = r.tracking && r.tracking.mode === "basket";
-                  const avgCost = (r.units && r.units > 0) ? r.cost / r.units : null;
-                  return (
-                    <div key={r.fundCode} style={{ padding: "14px 0", borderBottom: "1px solid var(--border-soft)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                        <div style={{ minWidth: 0 }}>
-                          <span style={{ fontSize: 12.5, color: "var(--text-2)", fontWeight: 600 }}>{r.fundName || r.fundCode}</span>
-                          <span style={{ fontSize: 10.5, color: "var(--text-faint)", marginLeft: 8 }}>
-                            {r.main ? (r.main.name || r.main.code) : ""}
-                          </span>
-                        </div>
-                        <span style={{ ...s.mono, fontSize: 13, fontWeight: 700, color: c }}>
-                          {trendMode === "return"
-                            ? (chg >= 0 ? "+" : "") + chg.toFixed(1) + "%"
-                            : fmtNum(cs[cs.length - 1], 2) + (ccy && !isBasket ? " " + ccy : "")}
-                          <span style={{ ...s.mono, fontSize: 10.5, fontWeight: 400, color: "var(--text-faint)", marginLeft: 8 }}>
-                            {d0} – {d1}
-                          </span>
-                        </span>
-                      </div>
-                      <TrendChart kline={r.kline} color={c} rangeDays={trendRange} mode={trendMode}
-                        cost={avgCost} estNav={r.est ? r.est.estNav : null} />
-                    </div>
-                  );
-                })}
-              </CollapsibleSection>
-            )}
-
-            {/* 區塊 3：買賣建議 */}
-            {adviceRows.length > 0 && (
-              <CollapsibleSection title="買賣參考" s={s} defaultOpen={false}>
-                {adviceRows.map((r) => {
-                  const tc = r.signal.tone === "pos" ? "var(--pos)" : r.signal.tone === "warn" ? "var(--warn)" : "var(--text-3)";
-                  return (
-                    <div key={r.fundCode} style={{ display: "flex", gap: 9, padding: "10px 0", borderBottom: "1px solid var(--border-soft)" }}>
-                      <span style={{ width: 3, borderRadius: 2, background: tc, flexShrink: 0 }} />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 3 }}>
-                          {r.fundName || r.fundCode}
-                          {r.returnRate !== null && (
-                            <span style={{ ...s.mono, fontSize: 11, color: r.returnRate >= 0 ? "var(--pos)" : "var(--neg)", marginLeft: 7 }}>
-                              {fmtSigned(r.returnRate)}%
-                            </span>
-                          )}
-                        </div>
-                        <p style={{ fontSize: 11.5, color: "var(--text-4)", margin: 0, lineHeight: 1.6 }}>{r.signal.text}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-                <p style={{ fontSize: 10.5, color: "var(--text-faint)", margin: "14px 0 0", lineHeight: 1.6 }}>
-                  以上為根據公開行情自動推算的參考資訊，僅供參考，不構成投資建議。預估值與銀行實際結算淨值必有落差。
-                </p>
-              </CollapsibleSection>
-            )}
-
-            {/* 未設定追蹤的基金 */}
-            {untrackedCodes.length > 0 && (
-              <CollapsibleSection title={`尚未設定追蹤（${untrackedCodes.length}）`} s={s}
-                right={adviceRows.length > 0 ? (
-                  <button type="button" style={{ ...s.ghostBtn, display: "inline-flex", alignItems: "center", gap: 6 }} onClick={(e) => { e.stopPropagation(); autoBindAll(); }}>
-                    <Target size={14} /> 一鍵綁定
-                  </button>
-                ) : null}>
-                {untrackedCodes.map((fc) => {
-                  const g = guessIndexForFund(fundNames[fc] || fc);
-                  return (
-                    <div key={fc} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid var(--border-soft)" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          <span style={s.mono}>{fc}</span>
-                          {fundNames[fc] ? <span style={{ color: "var(--text-4)", marginLeft: 6, fontSize: 11 }}>{fundNames[fc]}</span> : null}
-                        </div>
-                        <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 2 }}>
-                          {g ? (g.code ? `推薦：${g.name}` : "推薦：債券／貨幣型（倉位 0%）") : "無推薦，請手動設定"}
-                        </div>
-                      </div>
-                      <button type="button" style={{ ...s.cardActionBtn, flexShrink: 0 }} onClick={() => setTrackFund(fc)}>設定追蹤</button>
-                    </div>
-                  );
-                })}
-              </CollapsibleSection>
-            )}
-          </>
+        {activeTab === "tables" && (
+          <LedgerTables transactions={transactions} holdings={holdings} fundNames={fundNames}
+            navMap={navMap} priceHistory={priceHistory} effectiveNavMap={effNavMap}
+            estimatedNavMap={estNavByCode} trackingMap={trackingMap} onTracking={setTrackFund}
+            quoteState={quoteState} quoteAt={quoteAt} onRefresh={() => fetchQuotes(quoteCodes)}
+            canRefresh={quoteCodes.length > 0} />
         )}
       </div>
 
@@ -4389,8 +4012,8 @@ function FundLedger() {
         <button className={"fl-tab" + (activeTab === "calendar" ? " active" : "")} onClick={() => setActiveTab("calendar")}>
           <Calendar size={20} /> <span>收益日曆</span>
         </button>
-        <button className={"fl-tab" + (activeTab === "advice" ? " active" : "")} onClick={() => setActiveTab("advice")}>
-          <Lightbulb size={20} /> <span>理財建議</span>
+        <button className={"fl-tab" + (activeTab === "tables" ? " active" : "")} onClick={() => setActiveTab("tables")}>
+          <ListOrdered size={20} /> <span>資料表</span>
         </button>
         </div>
       </nav>
