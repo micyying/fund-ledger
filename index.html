@@ -325,17 +325,18 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.1.1";
+const APP_VERSION = "v1.2.0";
 const APP_RELEASE_DATE = "2026-09-26";
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
   document.querySelector('link[rel="apple-touch-icon"]')?.href || "";
 // 帳號系統：資料按帳號隔離儲存
 const ACCOUNTS = {
-  Micy: { label: "Micy", password: "MicyMoneyMoneyComesToMe2026", owner: true },
-  Demo: { label: "Demo", password: "", owner: false, noPassword: true },
+  Micy: { label: "Micy", owner: true },
+  Demo: { label: "Demo", owner: false, noPassword: true },
 };
 const ACCOUNT_KEY = "fundLedger_currentAccount";
+const PASSWORD_VERIFIER_KEY = "fundLedger_Micy_passwordVerifier_v1";
 // 資料鍵（account 層級會自動加上 fundLedger_<帳號>_ 前綴）
 const STORAGE_KEY = "transactions";
 const NAV_KEY = "currentNav";
@@ -1311,40 +1312,9 @@ const storage = {
   },
 };
 
-// 雲端同步（Micy 帳號跨設備共享；使用固定同步代碼，密碼仍僅為本地閘門）
-const CLOUD_CODE_MICY = "micy";
-const LAST_SYNC_KEY = "lastSyncAt";  // 跨裝置同步：記錄本機最後一次同步時間
-const BACKUP_REMINDER_KEY = "backupReminderShownDate";
-// GitHub Pages 沒有後端；同步、股票搜尋和行情仍使用原 WorkBuddy API，OCR 在瀏覽器本機執行。
+// GitHub Pages 只使用原 WorkBuddy API 提供的行情與股票搜尋；私人同步需另建受保護的後端。
 const BACKEND_ORIGIN = "https://micyfundledger.bj3.agentos-app.net";
 function apiUrl(path) { return BACKEND_ORIGIN + path; }
-function cloudPush(code, payload) {
-  try {
-    fetch(apiUrl("/api/sync"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, data: payload }),
-    }).catch(() => {});
-  } catch (e) { /* ignore */ }
-}
-function cloudPull(code) {
-  const timeout = new Promise((res) => setTimeout(() => res(null), 4000));
-  const req = fetch(apiUrl("/api/sync?code=" + encodeURIComponent(code)))
-    .then((r) => r.json())
-    .then((j) => (j ? { data: j.data || null, updatedAt: j.updatedAt || null } : null))
-    .catch(() => null);
-  return Promise.race([req, timeout]);
-}
-async function recoverLegacyMicy() {
-  for (const code of ["MicyMoneyMoneyComesToMe2026", "Demo"]) {
-    try {
-      const raw = await cloudPull(code);
-      const d = raw && raw.data;
-      if (d && Array.isArray(d.transactions) && d.transactions.length) return d;
-    } catch (e) {}
-  }
-  return null;
-}
 
 // Sync helpers (for non-async localStorage access)
 function lsGet(key, fallback) {
@@ -1354,6 +1324,43 @@ function lsGet(key, fallback) {
 function lsSet(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); }
   catch(e) {}
+}
+
+// 密碼驗證資料只存在本機瀏覽器；公開的 HTML 不包含密碼或其雜湊。
+function readPasswordVerifier() {
+  const saved = lsGet(PASSWORD_VERIFIER_KEY, null);
+  return saved && saved.version === 1 && saved.salt && saved.hash && saved.iterations
+    ? saved : null;
+}
+function encodeBytes(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+function decodeBytes(value) {
+  return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+}
+async function derivePasswordHash(password, salt, iterations) {
+  if (!window.crypto || !window.crypto.subtle) throw new Error("此瀏覽器無法安全驗證密碼");
+  const key = await window.crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]
+  );
+  const bits = await window.crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256
+  );
+  return new Uint8Array(bits);
+}
+async function createPasswordVerifier(password) {
+  const salt = window.crypto.getRandomValues(new Uint8Array(16));
+  const iterations = 310000;
+  const hash = await derivePasswordHash(password, salt, iterations);
+  return { version: 1, iterations, salt: encodeBytes(salt), hash: encodeBytes(hash) };
+}
+async function matchesPassword(password, verifier) {
+  const expected = decodeBytes(verifier.hash);
+  const actual = await derivePasswordHash(password, decodeBytes(verifier.salt), verifier.iterations);
+  if (actual.length !== expected.length) return false;
+  let difference = 0;
+  for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i];
+  return difference === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2698,30 +2705,53 @@ function FundLedger() {
   // ---- 帳號系統：預設 Micy（需密碼解鎖），Demo 為展示用假資料帳號 ----
   const [account, setAccount] = useState(lsGet(ACCOUNT_KEY, "Micy"));
   const [unlocked, setUnlocked] = useState([]); // 解鎖狀態僅留存於本次會話，重新整理需重新輸入密碼
+  const [passwordVerifier, setPasswordVerifier] = useState(readPasswordVerifier);
   const [pwInput, setPwInput] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
   const [pwError, setPwError] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   // 免密碼帳號（如 Demo 展示帳號）視為永遠已解鎖；其餘帳號需經 unlocked 清單判定
   const isUnlocked =
     unlocked.includes(account) || (ACCOUNTS[account] && ACCOUNTS[account].noPassword);
-  // 當前 transactions / navMap 等狀態所屬的帳號；用於防止切換帳號過程中
-  // 把上一個帳號的資料誤寫入另一個帳號的雲端/本機空間
-  const [loadedAccount, setLoadedAccount] = useState(null);
   useEffect(() => { ACTIVE_ACCOUNT = account; lsSet(ACCOUNT_KEY, account); }, [account]);
 
-  function tryUnlock(pw) {
+  async function tryUnlock(pw) {
     const acc = ACCOUNTS[account];
     if (!acc) { setPwError("未知的帳號"); return; }
-    if (pw === acc.password) {
-      setUnlocked([...new Set([...unlocked, account])]);
-      setPwError(""); setPwInput("");
-    } else {
-      setPwError("密碼錯誤，請再試一次");
+    if (account !== "Micy" || pwBusy) return;
+    if (!pw) { setPwError("請輸入密碼"); return; }
+    if (!passwordVerifier && pw.length < 12) {
+      setPwError("新密碼至少需要 12 個字元");
+      return;
+    }
+    if (!passwordVerifier && pw !== pwConfirm) {
+      setPwError("兩次輸入的密碼不一致");
+      return;
+    }
+    setPwBusy(true);
+    setPwError("");
+    try {
+      if (!passwordVerifier) {
+        const verifier = await createPasswordVerifier(pw);
+        localStorage.setItem(PASSWORD_VERIFIER_KEY, JSON.stringify(verifier));
+        setPasswordVerifier(verifier);
+      } else if (!(await matchesPassword(pw, passwordVerifier))) {
+        setPwError("密碼錯誤，請再試一次");
+        return;
+      }
+      setUnlocked((current) => [...new Set([...current, account])]);
+      setPwInput("");
+      setPwConfirm("");
+    } catch (e) {
+      setPwError("無法在此瀏覽器設定或驗證密碼；請確認網站資料可儲存。");
+    } finally {
+      setPwBusy(false);
     }
   }
   function switchAccount(name) {
     setShowAccount(false);
-    setPwInput(""); setPwError("");
+    setPwInput(""); setPwConfirm(""); setPwError("");
     setAccount(name);
   }
   const [page, setPage] = useState(1);
@@ -2831,7 +2861,6 @@ function FundLedger() {
           setTrackingMap(tkRes && tkRes.value ? JSON.parse(tkRes.value) : {});
           setActiveHouse(lsGet(HOUSE_FILTER_KEY, "__all__"));
           setHideZeroUnits(lsGet(HIDE_ZERO_KEY, false));
-          setLoadedAccount("Demo");
           setLoaded(true);
           return;
         }
@@ -2879,72 +2908,13 @@ function FundLedger() {
         setTrackingMap(tk);
         setActiveHouse(lsGet(HOUSE_FILTER_KEY, "__all__"));
         setHideZeroUnits(lsGet(HIDE_ZERO_KEY, false));
-
-        // Micy 帳號：與雲端同步（跨設備共享紀錄）
-        // 以時間戳為準：本機與雲端誰新就用誰，避免舊資料覆蓋新資料。
-        if (account === "Micy") {
-          const localSnapshot = {
-            transactions: txs,
-            navMap: nRes && nRes.value ? JSON.parse(nRes.value) : {},
-            fundNames: fnRes && fnRes.value ? JSON.parse(fnRes.value) : {},
-            priceHistory: ph,
-            trackingMap: tk,
-          };
-          const localSyncAt = lsGet(acctKey(LAST_SYNC_KEY), null);
-          try {
-            const remote = await cloudPull(CLOUD_CODE_MICY);
-            const remoteData = remote && remote.data;
-            const remoteAt = remote && remote.updatedAt;
-            // 雲端有新資料（且本機沒有比它更新的紀錄）→ 從雲端拉回
-            if (remoteData && remoteAt && Array.isArray(remoteData.transactions) && (!localSyncAt || remoteAt > localSyncAt)) {
-              if (remoteData.transactions) persistTransactions(remoteData.transactions);
-              if (remoteData.navMap) persistNav(remoteData.navMap);
-              if (remoteData.fundNames) persistFundNames(remoteData.fundNames);
-              if (remoteData.priceHistory) persistPriceHistory(remoteData.priceHistory);
-              if (remoteData.trackingMap) persistTracking(remoteData.trackingMap);
-              lsSet(acctKey(LAST_SYNC_KEY), remoteAt);
-            } else if (txs.length > 0) {
-              // 本機有資料且不比雲端舊 → 上傳到雲端
-              cloudPush(CLOUD_CODE_MICY, localSnapshot);
-              lsSet(acctKey(LAST_SYNC_KEY), new Date().toISOString());
-            } else {
-              // 本機與雲端皆空：嘗試從舊版同步碼恢復真實資料
-              const legacy = await recoverLegacyMicy();
-              if (legacy) {
-                if (legacy.transactions) persistTransactions(legacy.transactions);
-                if (legacy.navMap) persistNav(legacy.navMap);
-                if (legacy.fundNames) persistFundNames(legacy.fundNames);
-                if (legacy.priceHistory) persistPriceHistory(legacy.priceHistory);
-                if (legacy.trackingMap) persistTracking(legacy.trackingMap);
-                cloudPush(CLOUD_CODE_MICY, legacy);
-                lsSet(acctKey(LAST_SYNC_KEY), new Date().toISOString());
-              } else if (txs.length > 0) {
-                cloudPush(CLOUD_CODE_MICY, localSnapshot);
-                lsSet(acctKey(LAST_SYNC_KEY), new Date().toISOString());
-              }
-            }
-          } catch (e) {}
-        }
       } catch (e) {
         setError("讀取資料時發生問題，將從空白帳本開始。");
       } finally {
-        setLoadedAccount(account);
         setLoaded(true);
       }
     })();
   }, [account, isUnlocked]);
-
-  // Micy 帳號：資料變動後防抖上傳雲端，實現跨設備同步
-  // 關鍵防護：唯有「當前狀態確實屬於 Micy 且已完成載入」才允許上傳，
-  // 避免切換帳號的瞬間把上一個帳號（如 Demo）的資料誤寫入 Micy 雲端。
-  useEffect(() => {
-    if (account !== "Micy" || !isUnlocked || loadedAccount !== "Micy") return;
-    const t = setTimeout(() => {
-      cloudPush(CLOUD_CODE_MICY, { transactions, navMap, fundNames, priceHistory, trackingMap });
-      lsSet(acctKey(LAST_SYNC_KEY), new Date().toISOString());
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [transactions, navMap, fundNames, priceHistory, trackingMap, account, isUnlocked, loadedAccount]);
 
   const persistTransactions = useCallback(async (list) => {
     setTransactions(list);
@@ -3647,21 +3617,37 @@ function FundLedger() {
               <span style={{ fontSize: 11, color: "var(--text-4)" }}>{acc.owner ? "私人帳本" : "展示帳號"}</span>
             </div>
             <p style={{ fontSize: 13, color: "var(--text-3)", lineHeight: 1.6, margin: "0 0 14px" }}>
-              {acc.owner ? "這是 Micy 的私人帳本，請輸入密碼以查看紀錄。" : acc.noPassword ? "這是展示帳號，無需密碼即可直接瀏覽範例功能。" : "這是展示帳號，輸入密碼即可瀏覽範例功能。"}
+              {!passwordVerifier ? "首次開啟：請為此裝置設定一個新密碼，不要沿用舊版密碼。" : "請輸入此裝置設定的密碼以開啟帳本。"}
             </p>
             <input
-              type="text"
+              type="password"
               autoFocus
-              autoComplete="current-password"
+              autoComplete={passwordVerifier ? "current-password" : "new-password"}
               value={pwInput}
               onChange={(e) => setPwInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") tryUnlock(pwInput); }}
-              placeholder="請輸入密碼"
+              placeholder={passwordVerifier ? "請輸入密碼" : "設定新密碼（至少 12 字元）"}
               style={{ ...s.input, marginBottom: 10 }}
             />
+            {!passwordVerifier && (
+              <>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={pwConfirm}
+                  onChange={(e) => setPwConfirm(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") tryUnlock(pwInput); }}
+                  placeholder="再輸入一次新密碼"
+                  style={{ ...s.input, marginBottom: 10 }}
+                />
+                <p style={{ fontSize: 11, color: "var(--text-4)", lineHeight: 1.5, margin: "0 0 12px" }}>
+                  密碼驗證資料只存在這個瀏覽器；帳本資料仍存在本機儲存空間，密碼不會加密帳本內容。
+                </p>
+              </>
+            )}
             {pwError && <div style={{ fontSize: 12, color: "var(--neg)", marginBottom: 8 }}>{pwError}</div>}
-            <button type="button" style={{ ...s.saveBtn, width: "100%", marginBottom: 12 }} className="fl-btn" onClick={() => tryUnlock(pwInput)}>
-              解鎖
+            <button type="button" disabled={pwBusy} style={{ ...s.saveBtn, width: "100%", marginBottom: 12 }} className="fl-btn" onClick={() => tryUnlock(pwInput)}>
+              {pwBusy ? "處理中…" : passwordVerifier ? "解鎖" : "設定密碼並開啟"}
             </button>
             <div style={{ fontSize: 12, color: "var(--text-4)", textAlign: "center" }}>
               切換帳號：
