@@ -110,6 +110,8 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
 .fl-data-table th:first-child, .fl-data-table td:first-child { position:sticky; left:0; z-index:1; text-align:left; }
 .fl-data-table th:first-child { z-index:2; }
 .fl-data-table td:first-child { box-shadow:2px 0 4px rgba(0,0,0,.06); }
+.fl-viz-grid { display:flex; flex-wrap:wrap; gap:12px; }
+.fl-viz-card { flex:1 1 300px; min-width:0; background:var(--inset); border:1px solid var(--border); border-radius:var(--r-md); padding:14px; }
 </style>
 <!-- 第三方頁面統計已移除；本頁不再向騰訊 Beacon 發送訪問資料。 -->
 </head>
@@ -327,8 +329,14 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.3.0";
+const APP_VERSION = "v1.5.0";
 const APP_RELEASE_DATE = "2026-09-26";
+const APP_CHANGES = [
+  "資產總覽新增可自行設定的四類基金配置計畫與目標區間圖。",
+  "恆指及中國新經濟持倉可設定回升觀察淨值；達標且超配時提醒檢視，不會自動交易。",
+  "不同幣種須自行輸入換算匯率；分類、觀察價及目標區間會隨 JSON 備份匯出。",
+  "沿用上一版新增的持倉配置及資金進出圖表，版本資訊也會顯示本版改動。",
+];
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
   document.querySelector('link[rel="apple-touch-icon"]')?.href || "";
@@ -345,9 +353,47 @@ const NAV_KEY = "currentNav";
 const FUND_NAMES_KEY = "fundNames";
 const PRICE_HISTORY_KEY = "priceHistory";
 const TRACKING_KEY = "tracking";
+const ALLOCATION_PLAN_KEY = "allocationPlan";
+const ALLOCATION_SNOOZE_KEY = "allocationSnoozedDate";
 const HOUSE_FILTER_KEY = "fundLedger_activeHouse";
 const HIDE_ZERO_KEY = "fundLedger_hideZeroUnits";
 const DEFAULT_CCY = "HKD";
+const PLAN_CATEGORIES = [
+  { key: "global", label: "全球", min: 40, max: 50, color: "#60A5FA" },
+  { key: "usa", label: "美國", min: 25, max: 35, color: "#10B981" },
+  { key: "hsi", label: "恆指", min: 10, max: 20, color: "#FBBF24" },
+  { key: "china", label: "中國新經濟", min: 10, max: 15, color: "#A78BFA" },
+];
+const PLAN_CATEGORY_KEYS = new Set([...PLAN_CATEGORIES.map((c) => c.key), "other"]);
+function defaultAllocationPlan() {
+  return {
+    targets: Object.fromEntries(PLAN_CATEGORIES.map((c) => [c.key, { min: c.min, max: c.max }])),
+    fundCategories: Object.create(null), recoveryNav: Object.create(null), fxToHKD: Object.create(null),
+  };
+}
+function normalizeAllocationPlan(raw) {
+  const base = defaultAllocationPlan();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
+  for (const c of PLAN_CATEGORIES) {
+    const target = raw.targets && raw.targets[c.key];
+    const min = Number(target && target.min), max = Number(target && target.max);
+    if (target && typeof target === "object" && Number.isFinite(min) && Number.isFinite(max) && min >= 0 && max <= 100 && min <= max) {
+      base.targets[c.key] = { min, max };
+    }
+  }
+  for (const [code, category] of Object.entries(raw.fundCategories || {})) {
+    if (PLAN_CATEGORY_KEYS.has(category)) base.fundCategories[code] = category;
+  }
+  for (const [code, value] of Object.entries(raw.recoveryNav || {})) {
+    const nav = Number(value);
+    if (Number.isFinite(nav) && nav > 0) base.recoveryNav[code] = nav;
+  }
+  for (const [ccy, value] of Object.entries(raw.fxToHKD || {})) {
+    const rate = Number(value);
+    if (Number.isFinite(rate) && rate > 0) base.fxToHKD[ccy] = rate;
+  }
+  return base;
+}
 const POS_COLOR = "var(--pos)";
 const NEG_COLOR = "var(--neg)";
 
@@ -2511,8 +2557,76 @@ function TrackingSetupModal({ fundCode, fundName, tracking, onSave, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// 資料表：持倉、平台與每月資金進出
+// 圖表與資料表：共用同一組持倉估值及交易彙總
 // ---------------------------------------------------------------------------
+const ALLOCATION_COLORS = ["#10B981", "#60A5FA", "#FBBF24", "#A78BFA", "#FB7185", "#64748B"];
+
+function AllocationChart({ rows, ccy }) {
+  const valued = rows.filter((row) => Number.isFinite(row.marketValue) && row.marketValue > 0);
+  const missing = rows.filter((row) => row.marketValue == null).length;
+  const total = valued.reduce((sum, row) => sum + row.marketValue, 0);
+  const slices = valued.slice(0, 5).map((row) => ({
+    key: row.code, label: row.name || row.code, value: row.marketValue,
+  }));
+  const other = valued.slice(5).reduce((sum, row) => sum + row.marketValue, 0);
+  if (other > 0) slices.push({ key: "other", label: `其他 ${valued.length - 5} 檔`, value: other });
+
+  return <div className="fl-viz-card">
+    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>持倉配置</div>
+    <div style={{ fontSize: 11, color: "var(--text-4)", marginBottom: 13 }}>按可估值基金的預估市值 · {ccy}</div>
+    {total > 0 ? <>
+      <div role="img" aria-label={`${ccy} 持倉配置，總市值 ${fmtMoney(total, ccy)}`}
+        style={{ display: "flex", width: "100%", height: 26, borderRadius: 8, overflow: "hidden", background: "var(--border)", marginBottom: 13 }}>
+        {slices.map((item, i) => <div key={item.key} title={`${item.label} · ${(item.value / total * 100).toFixed(1)}%`}
+          style={{ width: `${item.value / total * 100}%`, background: ALLOCATION_COLORS[i], height: "100%" }} />)}
+      </div>
+      {slices.map((item, i) => <div key={item.key} style={{ display: "flex", alignItems: "center", gap: 8, margin: "7px 0", fontSize: 11.5 }}>
+        <span style={{ width: 9, height: 9, borderRadius: 2, background: ALLOCATION_COLORS[i], flexShrink: 0 }} />
+        <span title={item.label} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+        <span style={{ color: "var(--text-2)", fontVariantNumeric: "tabular-nums" }}>{(item.value / total * 100).toFixed(1)}%</span>
+      </div>)}
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 9, marginTop: 9, fontSize: 11.5, color: "var(--text-3)" }}>
+        已估值市值：{fmtMoney(total, ccy)}
+      </div>
+    </> : <p style={{ fontSize: 12, color: "var(--text-4)" }}>目前沒有可估值的持倉。</p>}
+    {missing > 0 && <p style={{ fontSize: 11, color: "var(--warn)", margin: "9px 0 0" }}>
+      {missing} 檔缺少淨值，未納入配置占比。
+    </p>}
+  </div>;
+}
+
+function CashFlowChart({ rows, ccy }) {
+  const recent = rows.slice(0, 6).reverse();
+  const maxAbs = Math.max(1, ...recent.map((row) => Math.abs(row.net)));
+  return <div className="fl-viz-card">
+    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>每月資金淨流入</div>
+    <div style={{ fontSize: 11, color: "var(--text-4)", marginBottom: 13 }}>最近 {recent.length} 個有交易的月份 · {ccy}</div>
+    {recent.length ? recent.map((row) => {
+      const width = `${Math.abs(row.net) / maxAbs * 100}%`;
+      return <div key={row.month} style={{ display: "flex", alignItems: "center", gap: 7, margin: "10px 0", fontSize: 10.5 }}>
+        <span style={{ width: 42, flexShrink: 0, color: "var(--text-3)" }}>{row.month.slice(2)}</span>
+        <div role="img" aria-label={`${row.month} 淨流入 ${fmtSignedMoney(row.net, ccy)}`}
+          style={{ display: "flex", flex: 1, height: 17, minWidth: 0, background: "var(--surface)", borderRadius: 3, overflow: "hidden" }}>
+          <div style={{ width: "50%", display: "flex", justifyContent: "flex-end", borderRight: "1px solid var(--text-4)" }}>
+            {row.net < 0 && <div style={{ width, background: "var(--neg)", borderRadius: "3px 0 0 3px" }} />}
+          </div>
+          <div style={{ width: "50%" }}>
+            {row.net > 0 && <div style={{ width, height: "100%", background: "var(--pos)", borderRadius: "0 3px 3px 0" }} />}
+          </div>
+        </div>
+        <span title={fmtSignedMoney(row.net, ccy)} style={{ width: 78, flexShrink: 0, textAlign: "right", color: row.net < 0 ? "var(--neg)" : "var(--pos)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+          {fmtSignedMoney(row.net, ccy)}
+        </span>
+      </div>;
+    }) : <p style={{ fontSize: 12, color: "var(--text-4)" }}>目前沒有交易紀錄。</p>}
+    <div style={{ display: "flex", gap: 14, marginTop: 13, fontSize: 10.5, color: "var(--text-4)" }}>
+      <span><span style={{ color: "var(--neg)" }}>■</span> 淨流出</span>
+      <span><span style={{ color: "var(--pos)" }}>■</span> 淨流入</span>
+    </div>
+    <p style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--text-4)", margin: "9px 0 0" }}>資金進出並非投資盈虧；未交易的月份不顯示。</p>
+  </div>;
+}
+
 function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
   effectiveNavMap, estimatedNavMap, trackingMap, onTracking, quoteState, quoteAt, onRefresh, canRefresh }) {
   const { holdingsByCcy, housesByCcy, monthsByCcy } = useMemo(() => {
@@ -2579,6 +2693,7 @@ function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
     return { holdingsByCcy, housesByCcy, monthsByCcy };
   }, [transactions, holdings, fundNames, navMap, priceHistory, effectiveNavMap, estimatedNavMap, trackingMap]);
 
+  const chartCurrencies = [...new Set([...Object.keys(holdingsByCcy), ...Object.keys(monthsByCcy)])].sort();
   const blockStyle = { ...s.ledgerSection, padding: 16, marginBottom: 16 };
   const titleStyle = { margin: "0 0 10px", fontSize: 14, color: "var(--text)", fontWeight: 600 };
   const ccyStyle = { margin: "14px 0 7px", fontSize: 11, color: "var(--text-4)", fontWeight: 600 };
@@ -2599,6 +2714,19 @@ function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
         {quoteState === "ok" && quoteAt ? ` 行情更新：${quoteAt.toLocaleString("zh-TW")}` : ""}
         {quoteState === "error" ? " 行情更新失敗，會沿用已儲存的淨值。" : ""}
       </p>
+
+      <section style={blockStyle}>
+        <h2 style={titleStyle}>圖表總覽</h2>
+        {chartCurrencies.length === 0 ? empty : chartCurrencies.map((ccy) => (
+            <div key={ccy}>
+              <div style={ccyStyle}>{ccy}</div>
+              <div className="fl-viz-grid">
+                <AllocationChart rows={holdingsByCcy[ccy] || []} ccy={ccy} />
+                <CashFlowChart rows={monthsByCcy[ccy] || []} ccy={ccy} />
+              </div>
+            </div>
+          ))}
+      </section>
 
       <section style={blockStyle}>
         <h2 style={titleStyle}>基金持倉</h2>
@@ -2679,6 +2807,175 @@ function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
   );
 }
 
+function buildAllocationSnapshot(holdings, effectiveNavMap, plan) {
+  const values = Object.fromEntries([...PLAN_CATEGORIES.map((c) => c.key), "other"].map((key) => [key, 0]));
+  const missing = { category: [], nav: [], fx: [] };
+  let count = 0;
+  for (const [code, holding] of Object.entries(holdings)) {
+    if (!holding || holding.units <= 0) continue;
+    count++;
+    const category = plan.fundCategories[code];
+    if (!PLAN_CATEGORY_KEYS.has(category)) missing.category.push(code);
+    const valuation = valueHolding(holding, effectiveNavMap[code]);
+    if (valuation.missing) missing.nav.push(code);
+    const ccy = holding.currency || DEFAULT_CCY;
+    const fx = ccy === DEFAULT_CCY ? 1 : Number(plan.fxToHKD[ccy]);
+    if (!Number.isFinite(fx) || fx <= 0) missing.fx.push(ccy);
+    if (PLAN_CATEGORY_KEYS.has(category) && !valuation.missing && Number.isFinite(fx) && fx > 0) {
+      values[category] += valuation.marketValue * fx;
+    }
+  }
+  missing.fx = [...new Set(missing.fx)];
+  const complete = count > 0 && !missing.category.length && !missing.nav.length && !missing.fx.length;
+  const total = Object.values(values).reduce((sum, value) => sum + value, 0);
+  const pct = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, complete && total > 0 ? value / total * 100 : null]));
+  return { count, complete: complete && total > 0, missing, values, total, pct };
+}
+
+function AllocationPlanCard({ snapshot, plan, holdings, fundNames, navMap, priceHistory, onSetup, snoozedToday, onSnooze }) {
+  const reached = [];
+  const watching = [];
+  if (snapshot.complete) {
+    for (const [code, h] of Object.entries(holdings)) {
+      if (!h || h.units <= 0) continue;
+      const category = plan.fundCategories[code];
+      if (category !== "hsi" && category !== "china") continue;
+      const target = plan.targets[category];
+      if (snapshot.pct[category] <= target.max) continue;
+      const threshold = Number(plan.recoveryNav[code]);
+      const known = latestKnownNav(code, priceHistory, navMap);
+      const item = { code, name: fundNames[code] || code, category, threshold, current: known && known.price };
+      if (Number.isFinite(threshold) && threshold > 0 && known && known.price >= threshold) reached.push(item);
+      else watching.push(item);
+    }
+  }
+  const notice = snapshot.missing;
+  const noticeParts = [
+    notice.category.length ? `${notice.category.length} 檔未分類` : "",
+    notice.nav.length ? `${notice.nav.length} 檔缺淨值` : "",
+    notice.fx.length ? `${notice.fx.join("、")} 缺換算匯率` : "",
+  ].filter(Boolean);
+
+  return <section style={{ ...s.ledgerSection, padding: 16, marginBottom: 20 }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+      <h2 style={{ margin: 0, fontSize: 15, color: "var(--text)" }}>我的配置計畫</h2>
+      <button type="button" className="fl-ghost" style={{ ...s.ghostBtn, fontSize: 11, flexShrink: 0 }} onClick={onSetup}>設定計畫</button>
+    </div>
+    <p style={{ fontSize: 11.5, color: "var(--text-4)", lineHeight: 1.6, margin: "0 0 15px" }}>
+      按目前持倉的預估市值換算為港幣；色帶是你設定的目標區間，直線是目前占比。只是檢視工具，不會替你交易。
+    </p>
+    {!snapshot.complete && <div role="status" style={{ padding: "10px 12px", borderRadius: 8, background: "var(--inset)", color: "var(--warn)", fontSize: 12, lineHeight: 1.6, marginBottom: 14 }}>
+      {snapshot.count === 0 ? "尚無持倉；有交易紀錄後可開始設定。" : `配置尚不能完整計算：${noticeParts.join("、") || "市值總額為零"}。請點「設定計畫」補齊。`}
+    </div>}
+    {PLAN_CATEGORIES.map((category) => {
+      const target = plan.targets[category.key];
+      const actual = snapshot.pct[category.key];
+      const state = actual == null ? "" : actual > target.max ? "超配" : actual < target.min ? "低於目標" : "目標內";
+      const color = actual == null ? "var(--text-4)" : actual > target.max ? "var(--warn)" : actual < target.min ? "var(--text-3)" : "var(--pos)";
+      return <div key={category.key} style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, marginBottom: 6 }}>
+          <span style={{ fontWeight: 600 }}>{category.label} <span style={{ color: "var(--text-4)", fontWeight: 400 }}>目標 {target.min}–{target.max}%</span></span>
+          <span style={{ color, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+            {actual == null ? "—" : `${actual.toFixed(1)}% · ${state}`}
+          </span>
+        </div>
+        <div role="img" aria-label={`${category.label} 目標 ${target.min} 至 ${target.max}%，目前 ${actual == null ? "未能計算" : actual.toFixed(1) + "%"}`}
+          style={{ position: "relative", height: 14, background: "var(--inset)", borderRadius: 7, overflow: "hidden" }}>
+          <div style={{ position: "absolute", left: `${target.min}%`, width: `${target.max - target.min}%`, top: 0, bottom: 0, background: category.color, opacity: 0.45 }} />
+          {actual != null && <div style={{ position: "absolute", left: `clamp(2px, ${actual}%, calc(100% - 2px))`, top: 0, bottom: 0, width: 3, background: "var(--text)", transform: "translateX(-50%)" }} />}
+        </div>
+      </div>;
+    })}
+    {snapshot.complete && snapshot.pct.other > 0 && <div style={{ fontSize: 11.5, color: "var(--text-3)", marginBottom: 11 }}>其他基金：{snapshot.pct.other.toFixed(1)}%</div>}
+    {snapshot.complete && <div style={{ fontSize: 11, color: "var(--text-4)", marginBottom: 12 }}>已納入持倉市值：{fmtMoney(snapshot.total, DEFAULT_CCY)}（手填匯率僅用於此配置計算）</div>}
+    {reached.length > 0 && !snoozedToday && <div role="status" style={{ background: "var(--accent-22)", border: "1px solid var(--pos-border)", borderRadius: 9, padding: "11px 12px", fontSize: 12, lineHeight: 1.6 }}>
+      <strong>回升觀察提醒</strong>：{reached.map((item) => `${item.name}（已存淨值 ${fmtNum(item.current, 4)}／觀察價 ${fmtNum(item.threshold, 4)}）`).join("、")}已達到你設定的觀察價，且類別仍高於目標上限。請先核對最新淨值，再自行檢視是否分批調整、逐步轉向全球與美國基金。
+      <button type="button" className="fl-realized-btn" style={{ color: "var(--accent)", marginLeft: 8 }} onClick={onSnooze}>今天不再提醒</button>
+    </div>}
+    {watching.length > 0 && <p style={{ margin: "10px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.6 }}>
+      超過目標、繼續觀察：{watching.map((item) => `${item.name}${item.threshold > 0 ? `（觀察淨值 ${fmtNum(item.threshold, 4)}）` : "（尚未設定觀察價）"}`).join("、")}。
+    </p>}
+    <p style={{ margin: "12px 0 0", fontSize: 10.5, color: "var(--text-4)", lineHeight: 1.5 }}>
+      僅在開啟帳本時檢查已儲存的淨值；不會背景推播，也不代表價格已即時更新。
+    </p>
+  </section>;
+}
+
+function AllocationSettingsModal({ plan, holdings, fundNames, navMap, priceHistory, onSave, onClose }) {
+  const [draft, setDraft] = useState(() => normalizeAllocationPlan(plan));
+  const [validation, setValidation] = useState("");
+  const current = Object.entries(holdings).filter(([, h]) => h && h.units > 0).sort(([a], [b]) => a.localeCompare(b, "zh-TW"));
+  const currencies = [...new Set(current.map(([, h]) => h.currency || DEFAULT_CCY))].filter((ccy) => ccy !== DEFAULT_CCY).sort();
+  function save() {
+    const targets = PLAN_CATEGORIES.map((c) => draft.targets[c.key]);
+    if (targets.some((r) => r.min === "" || r.max === "" || !Number.isFinite(Number(r.min)) || !Number.isFinite(Number(r.max)) || Number(r.min) < 0 || Number(r.max) > 100 || Number(r.min) > Number(r.max))) {
+      setValidation("目標區間須為 0–100%，且下限不能高於上限。"); return;
+    }
+    if (targets.reduce((sum, r) => sum + Number(r.min), 0) > 100 || targets.reduce((sum, r) => sum + Number(r.max), 0) < 100) {
+      setValidation("四個目標區間須能組成 100%；請調整上下限。"); return;
+    }
+    if (Object.values(draft.fxToHKD).some((rate) => rate !== "" && (!Number.isFinite(Number(rate)) || Number(rate) <= 0)) ||
+      Object.values(draft.recoveryNav).some((nav) => nav !== "" && (!Number.isFinite(Number(nav)) || Number(nav) <= 0))) {
+      setValidation("匯率及觀察淨值請填正數，或留空稍後設定。"); return;
+    }
+    onSave(normalizeAllocationPlan(draft));
+  }
+  const labelStyle = { display: "block", fontSize: 11, color: "var(--text-3)", marginBottom: 5 };
+  return <div style={s.modalBackdrop} onClick={onClose}>
+    <div style={{ ...s.modal, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+      <div style={s.modalHeader}>
+        <h2 style={s.modalTitle}>設定配置計畫</h2>
+        <button type="button" style={s.closeBtn} onClick={onClose} aria-label="關閉"><X size={18} /></button>
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.6 }}>設定只存於此帳號的瀏覽器資料，會隨 JSON 備份匯出；GitHub 倉庫不會保存你的實際持倉或觀察價。</p>
+      <h3 style={{ fontSize: 13, margin: "17px 0 9px" }}>目標範圍</h3>
+      {PLAN_CATEGORIES.map((c) => <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 9 }}>
+        <span style={{ width: 82, flexShrink: 0, fontSize: 12 }}>{c.label}</span>
+        <label style={{ flex: 1, minWidth: 0 }}><span style={labelStyle}>下限 %</span><input type="number" min="0" max="100" step="1" inputMode="decimal" style={s.input}
+          value={draft.targets[c.key].min} onChange={(e) => setDraft((prev) => ({ ...prev, targets: { ...prev.targets, [c.key]: { ...prev.targets[c.key], min: e.target.value } } }))} /></label>
+        <label style={{ flex: 1, minWidth: 0 }}><span style={labelStyle}>上限 %</span><input type="number" min="0" max="100" step="1" inputMode="decimal" style={s.input}
+          value={draft.targets[c.key].max} onChange={(e) => setDraft((prev) => ({ ...prev, targets: { ...prev.targets, [c.key]: { ...prev.targets[c.key], max: e.target.value } } }))} /></label>
+      </div>)}
+      <h3 style={{ fontSize: 13, margin: "17px 0 9px" }}>基金分類與回升觀察價</h3>
+      {current.length === 0 ? <p style={{ fontSize: 11.5, color: "var(--text-4)" }}>目前沒有持倉基金。</p> : current.map(([code, h]) => {
+        const category = draft.fundCategories[code] || "";
+        const known = latestKnownNav(code, priceHistory, navMap);
+        return <div key={code} style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 7 }}>{fundNames[code] || code} <span style={{ color: "var(--text-4)", fontWeight: 400 }}>{code}</span></div>
+          <label style={labelStyle}>配置類別</label>
+          <select style={s.input} value={category} onChange={(e) => setDraft((prev) => ({ ...prev, fundCategories: { ...prev.fundCategories, [code]: e.target.value } }))}>
+            <option value="">請選擇</option>
+            {PLAN_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            <option value="other">其他（仍計入總市值）</option>
+          </select>
+          {(category === "hsi" || category === "china") && <label style={{ ...labelStyle, marginTop: 9 }}>
+            回升觀察淨值（選填；達標且類別超配時提醒檢視）
+            <input type="number" min="0" step="any" inputMode="decimal" style={{ ...s.input, marginTop: 5 }} placeholder="由你決定，不會自動賣出"
+              value={draft.recoveryNav[code] ?? ""} onChange={(e) => setDraft((prev) => ({ ...prev, recoveryNav: { ...prev.recoveryNav, [code]: e.target.value } }))} />
+            <span style={{ display: "block", marginTop: 4, fontSize: 10.5, color: "var(--text-4)" }}>
+              目前已儲存淨值：{known ? fmtNum(known.price, 4) : "—"}；每單位持倉成本約 {h.units > 0 ? fmtNum(h.cost / h.units, 4) : "—"}。請自行核對最新淨值。
+            </span>
+          </label>}
+        </div>;
+      })}
+      {currencies.length > 0 && <>
+        <h3 style={{ fontSize: 13, margin: "17px 0 9px" }}>換算匯率（手動維護）</h3>
+        <p style={{ fontSize: 11, color: "var(--text-4)", lineHeight: 1.5 }}>不同幣種不能直接相加；未填匯率時不會顯示整體配置比例。匯率只用於此圖，不改動原始交易紀錄。</p>
+        {currencies.map((ccy) => <label key={ccy} style={{ ...labelStyle, marginBottom: 10 }}>
+          1 {ccy} = 多少 HKD
+          <input type="number" min="0" step="any" inputMode="decimal" style={{ ...s.input, marginTop: 5 }} placeholder="請輸入你採用的匯率"
+            value={draft.fxToHKD[ccy] ?? ""} onChange={(e) => setDraft((prev) => ({ ...prev, fxToHKD: { ...prev.fxToHKD, [ccy]: e.target.value } }))} />
+        </label>)}
+      </>}
+      {validation && <p role="alert" style={{ color: "var(--neg)", fontSize: 12 }}>{validation}</p>}
+      <div style={s.modalFooter}>
+        <button type="button" style={s.cancelBtn} onClick={onClose}>取消</button>
+        <button type="button" style={s.saveBtn} onClick={save}>儲存計畫</button>
+      </div>
+    </div>
+  </div>;
+}
+
 // ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
@@ -2688,6 +2985,9 @@ function FundLedger() {
   const [fundNames, setFundNames] = useState({});
   const [priceHistory, setPriceHistory] = useState({});
   const [trackingMap, setTrackingMap] = useState({});
+  const [allocationPlan, setAllocationPlan] = useState(defaultAllocationPlan);
+  const [allocationSettingsOpen, setAllocationSettingsOpen] = useState(false);
+  const [allocationSnoozedDate, setAllocationSnoozedDate] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -2770,6 +3070,7 @@ function FundLedger() {
   }
   function switchAccount(name) {
     setShowAccount(false);
+    setAllocationSettingsOpen(false);
     setPwInput(""); setPwConfirm(""); setPwError("");
     setAccount(name);
   }
@@ -2865,6 +3166,9 @@ function FundLedger() {
         const fnRes = await storage.get(FUND_NAMES_KEY);
         const phRes = await storage.get(PRICE_HISTORY_KEY);
         const tkRes = await storage.get(TRACKING_KEY);
+        const apRes = await storage.get(ALLOCATION_PLAN_KEY);
+        setAllocationPlan(normalizeAllocationPlan(apRes && apRes.value ? JSON.parse(apRes.value) : null));
+        setAllocationSnoozedDate(lsGet(acctKey(ALLOCATION_SNOOZE_KEY), ""));
         const txs = tRes && tRes.value ? JSON.parse(tRes.value) : [];
 
         // Demo 帳號：若尚無資料，以假資料初始化供朋友預覽
@@ -2963,6 +3267,13 @@ function FundLedger() {
     try { await storage.set(TRACKING_KEY, JSON.stringify(map)); } catch (e) { setError("儲存追蹤設定失敗，請稍後再試。"); }
   }, []);
 
+  const persistAllocationPlan = useCallback(async (plan) => {
+    const normalized = normalizeAllocationPlan(plan);
+    setAllocationPlan(normalized);
+    try { await storage.set(ALLOCATION_PLAN_KEY, JSON.stringify(normalized)); } catch (e) { setError("儲存配置計畫失敗，請稍後再試。"); }
+    setAllocationSettingsOpen(false);
+  }, []);
+
   const holdings = useMemo(() => computeHoldings(transactions), [transactions]);
   const fundCodes = useMemo(
     () => Object.keys(holdings).sort((a, b) => a.localeCompare(b, "zh-TW")),
@@ -3049,6 +3360,17 @@ function FundLedger() {
     }
     return { ...map, ...estNavByCode };
   }, [holdings, priceHistory, navMap, estNavByCode]);
+
+  const allocationSnapshot = useMemo(
+    () => buildAllocationSnapshot(holdings, effNavMap, allocationPlan),
+    [holdings, effNavMap, allocationPlan]
+  );
+
+  function snoozeAllocationToday() {
+    const today = localTodayStr();
+    setAllocationSnoozedDate(today);
+    lsSet(acctKey(ALLOCATION_SNOOZE_KEY), today);
+  }
 
   function saveTracking(fundCode, cfg) {
     const next = { ...trackingMap };
@@ -3248,7 +3570,7 @@ function FundLedger() {
   }
 
   function exportBackup() {
-    const payload = { exportedAt: new Date().toISOString(), version: 4, transactions, navMap, fundNames, priceHistory, trackingMap };
+    const payload = { exportedAt: new Date().toISOString(), version: 5, transactions, navMap, fundNames, priceHistory, trackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
@@ -3308,7 +3630,7 @@ function FundLedger() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data.transactions)) throw new Error("格式不正確");
-        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, fileName: file.name });
+        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
       } catch (err) {
         setError("這個備份檔案無法讀取，請確認是先前從此頁面下載的 JSON 備份。");
       }
@@ -3409,6 +3731,7 @@ function FundLedger() {
           fundNames: data.fundNames || {},
           priceHistory: data.priceHistory || {},
           trackingMap: data.trackingMap || null,
+          allocationPlan: data.allocationPlan || null,
           fileName: "貼上的備份文本",
         });
         setPasteImportOpen(false);
@@ -3444,6 +3767,7 @@ function FundLedger() {
       persistFundNames(importPending.fundNames);
       if (importPending.priceHistory) persistPriceHistory(importPending.priceHistory);
       if (importPending.trackingMap) persistTracking(importPending.trackingMap);
+      persistAllocationPlan(importPending.allocationPlan || defaultAllocationPlan());
     } else {
       const existingIds = new Set(transactions.map((t) => t.id));
       const merged = [...transactions, ...importPending.transactions.filter((t) => !existingIds.has(t.id))];
@@ -3452,6 +3776,15 @@ function FundLedger() {
       persistFundNames({ ...fundNames, ...importPending.fundNames });
       if (importPending.priceHistory) persistPriceHistory({ ...priceHistory, ...importPending.priceHistory });
       if (importPending.trackingMap) persistTracking({ ...trackingMap, ...importPending.trackingMap });
+      if (importPending.allocationPlan) {
+        const incoming = normalizeAllocationPlan(importPending.allocationPlan);
+        persistAllocationPlan({
+          targets: incoming.targets,
+          fundCategories: { ...allocationPlan.fundCategories, ...incoming.fundCategories },
+          recoveryNav: { ...allocationPlan.recoveryNav, ...incoming.recoveryNav },
+          fxToHKD: { ...allocationPlan.fxToHKD, ...incoming.fxToHKD },
+        });
+      }
     }
     // CSV 沒有獨立價格歷史，但成交價可同步進淨值走勢圖（與「貼上交易」一致）
     if (importPending.kind === "csv") {
@@ -3655,8 +3988,12 @@ function FundLedger() {
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{APP_CHANNEL} · {APP_VERSION}</div>
                 <div style={{ fontSize: 12, color: "var(--text-4)", marginTop: 5 }}>發布日期：{APP_RELEASE_DATE}</div>
               </div>
-              <p style={{ fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.7, margin: "0 0 12px" }}>
-                這是部署在 GitHub Pages 的版本，和 WorkBuddy 版分開使用。日後更新時會同步更新這裡的版本號，方便確認目前開啟的是哪一版。
+              <div style={{ fontSize: 12.5, color: "var(--text-2)", fontWeight: 700, marginBottom: 7 }}>這個版本改了什麼</div>
+              <ul style={{ margin: "0 0 13px", paddingLeft: 19, color: "var(--text-3)", fontSize: 12, lineHeight: 1.7 }}>
+                {APP_CHANGES.map((change) => <li key={change} style={{ marginBottom: 5 }}>{change}</li>)}
+              </ul>
+              <p style={{ fontSize: 11, color: "var(--text-4)", lineHeight: 1.6, margin: "0 0 12px" }}>
+                這是 GitHub Pages 版，和 WorkBuddy 版分開更新；版本升級不會自動清除這個瀏覽器的帳本資料。
               </p>
               <div style={s.modalFooter}>
                 <button type="button" style={s.cancelBtn} onClick={() => setVersionInfoOpen(false)}>關閉</button>
@@ -3804,6 +4141,11 @@ function FundLedger() {
               </div>
             </section>
           ))}
+
+        <AllocationPlanCard snapshot={allocationSnapshot} plan={allocationPlan} holdings={holdings}
+          fundNames={fundNames} navMap={navMap} priceHistory={priceHistory}
+          onSetup={() => setAllocationSettingsOpen(true)}
+          snoozedToday={allocationSnoozedDate === localTodayStr()} onSnooze={snoozeAllocationToday} />
 
         {fundCodes.length > 0 && <div style={s.sectionTitle}><span style={s.sectionBar} />持倉明細</div>}
         {/* House filter chips - above fund cards */}
@@ -4035,7 +4377,7 @@ function FundLedger() {
             <p style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.7 }}>
               {importPending.kind === "csv"
                 ? <>CSV 檔「{importPending.fileName}」可匯入 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？</>
-                : <>備份檔「{importPending.fileName}」內含 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？</>}
+                : <>備份檔「{importPending.fileName}」內含 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？{importPending.allocationPlan && <>備份內的配置目標、分類及觀察價也會一併還原。</>}</>}
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
               <button type="button" style={{...s.saveBtn, width: "100%"}} className="fl-btn" onClick={() => confirmImport("merge")}>
@@ -4096,6 +4438,12 @@ function FundLedger() {
           tracking={trackingMap[trackFund] || null}
           onSave={saveTracking}
           onClose={() => setTrackFund(null)} />
+      )}
+
+      {allocationSettingsOpen && (
+        <AllocationSettingsModal plan={allocationPlan} holdings={holdings} fundNames={fundNames}
+          navMap={navMap} priceHistory={priceHistory} onSave={persistAllocationPlan}
+          onClose={() => setAllocationSettingsOpen(false)} />
       )}
 
       {pasteImportOpen && (
