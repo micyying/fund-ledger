@@ -325,7 +325,7 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.2.0";
+const APP_VERSION = "v1.2.1";
 const APP_RELEASE_DATE = "2026-09-26";
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
@@ -873,6 +873,13 @@ function latestKnownNav(fundCode, priceHistory, navMap) {
   return best ? { price: best.price, date: best.date, fromManual: false } : null;
 }
 
+function valueHolding(holding, navValue) {
+  if (!holding || holding.units <= 0) return { marketValue: 0, missing: false };
+  const nav = Number(navValue);
+  if (!Number.isFinite(nav) || nav <= 0) return { marketValue: null, missing: true };
+  return { marketValue: nav * holding.units, missing: false };
+}
+
 // 計算兩個日期間的交易日數（粗略：排除週末，不含節假日）
 function tradingDaysBetween(fromDate, toDate) {
   if (!fromDate || !toDate || fromDate >= toDate) return 0;
@@ -1137,17 +1144,18 @@ function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory,
       {monthStat.length > 0 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           {monthStat.map((k) => (
-            <div key={k.label} style={{ flex: 1, background: "var(--surface)", border: "1px solid var(--border-soft)",
+            <div key={k.label} style={{ flex: 1, minWidth: 0, background: "var(--surface)", border: "1px solid var(--border-soft)",
               borderRadius: "var(--r-md)", boxShadow: "var(--shadow-card)", padding: "8px 10px" }}>
               <div style={{ fontSize: 10, color: "var(--text-4)" }}>{k.label}</div>
-              <div style={{ ...s.mono, fontSize: 13.5, fontWeight: 700, color: k.color }}>{k.value}</div>
+              <div style={{ ...s.mono, fontSize: "clamp(10px, 2.9vw, 13.5px)", fontWeight: 700,
+                color: k.color, overflow: "hidden", whiteSpace: "nowrap" }}>{k.value}</div>
             </div>
           ))}
         </div>
       )}
 
       {/* ── 星期標題 ─────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 6, marginBottom: 6 }}>
         {weekDays.map((w, i) => (
           <div key={w} style={{ textAlign: "center", fontSize: 11, fontWeight: 500, padding: "2px 0",
             color: (i === 0 || i === 6) ? "var(--accent)" : "var(--text-4)" }}>{w}</div>
@@ -1155,7 +1163,7 @@ function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory,
       </div>
 
       {/* ── 日期格子 ─────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 6 }}>
         {grid.map((c) => {
           if (c.pad) return <div key={c.key} style={{ minHeight: 64 }} />;
           const sel = selectedDay === c.date;
@@ -1169,7 +1177,7 @@ function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory,
             <div key={c.key} className={"fl-cal-cell" + (c.hasData ? " clickable" : "")}
               onClick={() => c.hasData && setSelectedDay(sel ? null : c.date)}
               style={{
-                minHeight: 64, borderRadius: "var(--r-cell)", padding: "8px 4px",
+                minHeight: 64, minWidth: 0, borderRadius: "var(--r-cell)", padding: "8px 2px",
                 background: bg, color: fg, position: "relative",
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3,
                 cursor: c.hasData ? "pointer" : "default",
@@ -1180,7 +1188,8 @@ function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory,
                              opacity: c.isToday ? 1 : 0.78, lineHeight: 1 }}>
                 {c.isToday ? "今" : c.d}
               </span>
-              <span style={{ ...s.mono, fontSize: 10.5, fontWeight: 600, lineHeight: 1.1 }}>
+              <span style={{ ...s.mono, maxWidth: "100%", overflow: "hidden", whiteSpace: "nowrap",
+                             fontSize: "clamp(7px, 2.2vw, 10.5px)", fontWeight: 600, lineHeight: 1.1, letterSpacing: "-0.04em" }}>
                 {c.isFuture ? "—" : c.hasData ? fmtSigned(c.data.total) : "0.00"}
               </span>
               {c.hasData && c.data.multiCcy && (
@@ -2064,12 +2073,11 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
       const ccy = h.currency || DEFAULT_CCY;
       const house = h.house || "未知";
       if (!map[ccy]) map[ccy] = {};
-      if (!map[ccy][house]) map[ccy][house] = { cost: 0, mv: 0, count: 0 };
-      // 用 navMap（你填的銀行淨值）× 單位數算預估市值，跟 totalsByCcy 一致
-      const nav = navMap[code];
-      const mv = nav && h.units > 0 ? nav * h.units : h.cost;
+      if (!map[ccy][house]) map[ccy][house] = { cost: 0, mv: 0, count: 0, unpricedCount: 0 };
+      const valuation = valueHolding(h, navMap[code]);
       map[ccy][house].cost += h.cost;
-      map[ccy][house].mv += mv;
+      if (!valuation.missing) map[ccy][house].mv += valuation.marketValue;
+      else map[ccy][house].unpricedCount += 1;
       map[ccy][house].count += 1;
     });
     return map;
@@ -2089,7 +2097,8 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
                 {ccySymbol(ccy)}
               </div>
               {Object.entries(houses).sort((a, b) => b[1].mv - a[1].mv).map(([house, d]) => {
-                const gain = d.mv - d.cost;
+                const complete = d.unpricedCount === 0;
+                const gain = complete ? d.mv - d.cost : null;
                 const pct = d.cost > 0 ? (gain / d.cost) * 100 : 0;
                 return (
                   <div key={house} style={{ background: "var(--inset)", border: "1px solid var(--border-soft)", borderRadius: 4, padding: "12px 14px", marginBottom: 8 }}>
@@ -2098,11 +2107,8 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
                         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{house}</span>
                         <span style={{ fontSize: 10.5, color: "var(--text-faint)" }}>{d.count} 檔</span>
                       </div>
-                      <span style={{ ...s.mono, fontSize: 14, fontWeight: 700, color: gain >= 0 ? POS_COLOR : NEG_COLOR }}>
-                        {gain >= 0 ? "+" : ""}{fmtMoney(gain, ccy)}
-                        <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 4 }}>
-                          ({pct >= 0 ? "+" : ""}{pct.toFixed(1)}%)
-                        </span>
+                      <span style={{ ...s.mono, fontSize: 14, fontWeight: 700, color: complete ? (gain >= 0 ? POS_COLOR : NEG_COLOR) : "var(--text-4)" }}>
+                        {complete ? <>{gain >= 0 ? "+" : ""}{fmtMoney(gain, ccy)}<span style={{ fontSize: 11, fontWeight: 500, marginLeft: 4 }}>({pct >= 0 ? "+" : ""}{pct.toFixed(1)}%)</span></> : "—"}
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5 }}>
@@ -2112,7 +2118,7 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
                       </div>
                       <div>
                         <span style={{ color: "var(--text-4)" }}>預估市值 </span>
-                        <span style={{ ...s.mono, color: "var(--text)", fontWeight: 600 }}>{fmtMoney(d.mv, ccy)}</span>
+                        <span style={{ ...s.mono, color: "var(--text)", fontWeight: 600 }}>{complete ? fmtMoney(d.mv, ccy) : `缺 ${d.unpricedCount} 檔淨值`}</span>
                       </div>
                     </div>
                   </div>
@@ -2122,7 +2128,7 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
           ))}
         </div>
         <p style={{ fontSize: 10.5, color: "var(--text-faint)", margin: "8px 0 0", lineHeight: 1.5 }}>
-          預估市值優先採用「即時預估淨值」（依你綁定的追蹤標的與即時行情推算：最新已知淨值 × (1 + 股票倉位% × 標的漲跌%)）；尚未設定追蹤標的或無行情時，退回你手填的「目前淨值」× 單位數，再無則以投入成本代替。
+          預估市值優先採用「即時預估淨值」；沒有即時行情時，依序使用手填的「目前淨值」或最新有效的價格紀錄。完全缺少淨值時不會以投入成本冒充市值。
         </p>
         <div style={s.modalFooter}><button type="button" style={s.cancelBtn} onClick={onClose}>關閉</button></div>
       </div>
@@ -2132,6 +2138,9 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
 
 function FloatingGainModal({ holdings, priceHistory, navMap, fundNames, onClose }) {
   const [sortDir, setSortDir] = useState("desc"); // desc = most gain first
+  const unpricedCount = Object.keys(holdings).filter((code) =>
+    holdings[code].units > 0 && !latestKnownNav(code, priceHistory, navMap)
+  ).length;
   const gains = useMemo(() => {
     const raw = computeFloatingGains(holdings, priceHistory, navMap, todayStr(), fundNames);
     return [...raw].sort((a, b) => sortDir === "desc" ? b.gain - a.gain : a.gain - b.gain);
@@ -2171,6 +2180,11 @@ function FloatingGainModal({ holdings, priceHistory, navMap, fundNames, onClose 
             {sortDir === "desc" ? "▼ 盈→虧" : "▲ 虧→盈"}
           </button>
         </div>
+        {unpricedCount > 0 && (
+          <p style={{ fontSize: 11.5, color: "var(--warn)", margin: "0 0 12px" }}>
+            另有 {unpricedCount} 檔持倉缺少淨值；以下明細只包含可估值的基金，不能作為全部持倉的盈虧合計。
+          </p>
+        )}
         <div style={{ maxHeight: "56vh", overflowY: "auto" }}>
           {gains.map((g, idx) => (
             <div key={idx} style={{ background: "var(--inset)", border: "1px solid var(--border-soft)", borderRadius: 4, padding: "10px 12px", marginBottom: 8 }}>
@@ -2195,7 +2209,7 @@ function FloatingGainModal({ holdings, priceHistory, navMap, fundNames, onClose 
           ))}
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-          <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>合計浮動盈虧（總成本 {fmtMoney(totalCost, gains[0]?.currency || DEFAULT_CCY)}）</span>
+          <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>可估值持倉合計（成本 {fmtMoney(totalCost, gains[0]?.currency || DEFAULT_CCY)}）</span>
           <span style={{...s.mono, fontSize: 16, fontWeight: 700, color: totalGain >= 0 ? POS_COLOR : NEG_COLOR }}>
             {totalGain >= 0 ? "+" : ""}{fmtMoney(totalGain, gains[0]?.currency || DEFAULT_CCY)}
           </span>
@@ -3080,8 +3094,15 @@ function FundLedger() {
     return map;
   }, [trackedCodes, trackingMap, holdings, priceHistory, navMap, quotes]);
 
-  // 以即時預估淨值覆寫手填淨值：有即時預估時優先用，否則退回手填值（再不行則用成本）
-  const effNavMap = useMemo(() => ({ ...navMap, ...estNavByCode }), [navMap, estNavByCode]);
+  // 總覽與明細共用同一組估值：即時估值 > 手填淨值 > 最新價格紀錄。
+  const effNavMap = useMemo(() => {
+    const map = {};
+    for (const code of Object.keys(holdings)) {
+      const known = latestKnownNav(code, priceHistory, navMap);
+      if (known) map[code] = known.price;
+    }
+    return { ...map, ...estNavByCode };
+  }, [holdings, priceHistory, navMap, estNavByCode]);
 
   // 一鍵為所有未設定的基金套用推薦標的
   // 將「推薦結果」轉為可儲存的追蹤設定；GLOBAL_BASKET_CODE 哨兵會展開為多指數籃，
@@ -3206,12 +3227,11 @@ function FundLedger() {
     for (const code of fundCodes) {
       const h = holdings[code];
       const ccy = h.currency || DEFAULT_CCY;
-      if (!map[ccy]) map[ccy] = { cost: 0, marketValue: 0, realized: 0, dividend: 0 };
-      // 預估市值優先用即時預估淨值（effNavMap 已含 estNav 覆寫），無則退回手填淨值，再無則用成本
-      const nav = effNavMap[code];
-      const mv = nav && h.units > 0 ? nav * h.units : h.cost;
+      if (!map[ccy]) map[ccy] = { cost: 0, marketValue: 0, realized: 0, dividend: 0, unpricedCount: 0 };
+      const valuation = valueHolding(h, effNavMap[code]);
       map[ccy].cost += h.cost;
-      map[ccy].marketValue += mv;
+      if (!valuation.missing) map[ccy].marketValue += valuation.marketValue;
+      else map[ccy].unpricedCount += 1;
       map[ccy].realized += h.realizedGain;
       map[ccy].dividend += h.dividendTotal;
     }
@@ -3831,7 +3851,7 @@ function FundLedger() {
           Object.entries(totalsByCcy).map(([ccy, t]) => (
             <section style={s.passbook} className="fl-fade" key={ccy}>
               <div style={s.passbookStub}>
-                <span style={s.stubLabel}>{ccySymbol(ccy)} · 累計投入成本</span>
+                <span style={s.stubLabel}>{ccySymbol(ccy)} · 目前持倉成本</span>
                 <span style={s.stubValueMono}>{fmtMoney(t.cost, ccy)}</span>
               </div>
               <div style={s.passbookDivider} />
@@ -3839,15 +3859,15 @@ function FundLedger() {
                 <span style={s.stubLabel}>預估市值{Object.keys(estNavByCode).length > 0 && <span style={{ color: "var(--accent)", fontSize: 9, marginLeft: 3, fontWeight: 600 }}>即時</span>}<span style={{ color: "var(--text-faint)", fontSize: 10 }}> ›</span></span>
                 <button className="fl-realized-btn" onClick={() => setShowMvModal(true)}
                   style={{...s.stubValueMono}}>
-                  {fmtMoney(t.marketValue, ccy)}
+                  {t.unpricedCount ? `缺 ${t.unpricedCount} 檔淨值` : fmtMoney(t.marketValue, ccy)}
                 </button>
               </div>
               <div style={s.passbookDivider} />
               <div style={s.passbookStub}>
                 <span style={s.stubLabel}>浮動盈虧{Object.keys(estNavByCode).length > 0 && <span style={{ color: "var(--accent)", fontSize: 9, marginLeft: 3, fontWeight: 600 }}>即時</span>}<span style={{ color: "var(--text-faint)", fontSize: 10 }}> ›</span></span>
                 <button className="fl-realized-btn" onClick={() => setShowFloatingModal(true)}
-                  style={{...s.stubValueMono, color: t.marketValue - t.cost >= 0 ? POS_COLOR : NEG_COLOR}}>
-                  {t.marketValue - t.cost >= 0 ? "+" : ""}{fmtMoney(t.marketValue - t.cost, ccy)}
+                  style={{...s.stubValueMono, color: t.unpricedCount ? "var(--text-4)" : (t.marketValue - t.cost >= 0 ? POS_COLOR : NEG_COLOR)}}>
+                  {t.unpricedCount ? "—" : <>{t.marketValue - t.cost >= 0 ? "+" : ""}{fmtMoney(t.marketValue - t.cost, ccy)}</>}
                 </button>
               </div>
               <div style={s.passbookDivider} />
