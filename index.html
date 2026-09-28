@@ -329,11 +329,11 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.5.1";
+const APP_VERSION = "v1.5.2";
 const APP_RELEASE_DATE = "2026-09-28";
 const APP_CHANGES = [
-  "修正週一、週五解鎖後，備份提醒因缺少記錄鍵而導致的空白頁。",
-  "備份提醒會照常出現；帳本資料和配置計畫不會因此重設。",
+  "將「我的配置計畫」從資產總覽移至資料表，保留設定及回升觀察提醒。",
+  "建議以 JSON 作完整備份；CSV 僅供檢視及匯入交易紀錄。",
 ];
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
@@ -4141,11 +4141,6 @@ function FundLedger() {
             </section>
           ))}
 
-        <AllocationPlanCard snapshot={allocationSnapshot} plan={allocationPlan} holdings={holdings}
-          fundNames={fundNames} navMap={navMap} priceHistory={priceHistory}
-          onSetup={() => setAllocationSettingsOpen(true)}
-          snoozedToday={allocationSnoozedDate === localTodayStr()} onSnooze={snoozeAllocationToday} />
-
         {fundCodes.length > 0 && <div style={s.sectionTitle}><span style={s.sectionBar} />持倉明細</div>}
         {/* House filter chips - above fund cards */}
         {allHouses.length > 1 && (
@@ -4336,11 +4331,17 @@ function FundLedger() {
           </>
         )}
         {activeTab === "tables" && (
-          <LedgerTables transactions={transactions} holdings={holdings} fundNames={fundNames}
-            navMap={navMap} priceHistory={priceHistory} effectiveNavMap={effNavMap}
-            estimatedNavMap={estNavByCode} trackingMap={trackingMap} onTracking={setTrackFund}
-            quoteState={quoteState} quoteAt={quoteAt} onRefresh={() => fetchQuotes(quoteCodes)}
-            canRefresh={quoteCodes.length > 0} />
+          <>
+            <AllocationPlanCard snapshot={allocationSnapshot} plan={allocationPlan} holdings={holdings}
+              fundNames={fundNames} navMap={navMap} priceHistory={priceHistory}
+              onSetup={() => setAllocationSettingsOpen(true)}
+              snoozedToday={allocationSnoozedDate === localTodayStr()} onSnooze={snoozeAllocationToday} />
+            <LedgerTables transactions={transactions} holdings={holdings} fundNames={fundNames}
+              navMap={navMap} priceHistory={priceHistory} effectiveNavMap={effNavMap}
+              estimatedNavMap={estNavByCode} trackingMap={trackingMap} onTracking={setTrackFund}
+              quoteState={quoteState} quoteAt={quoteAt} onRefresh={() => fetchQuotes(quoteCodes)}
+              canRefresh={quoteCodes.length > 0} />
+          </>
         )}
       </div>
 
