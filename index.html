@@ -329,13 +329,11 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.5.0";
-const APP_RELEASE_DATE = "2026-09-26";
+const APP_VERSION = "v1.5.1";
+const APP_RELEASE_DATE = "2026-09-28";
 const APP_CHANGES = [
-  "資產總覽新增可自行設定的四類基金配置計畫與目標區間圖。",
-  "恆指及中國新經濟持倉可設定回升觀察淨值；達標且超配時提醒檢視，不會自動交易。",
-  "不同幣種須自行輸入換算匯率；分類、觀察價及目標區間會隨 JSON 備份匯出。",
-  "沿用上一版新增的持倉配置及資金進出圖表，版本資訊也會顯示本版改動。",
+  "修正週一、週五解鎖後，備份提醒因缺少記錄鍵而導致的空白頁。",
+  "備份提醒會照常出現；帳本資料和配置計畫不會因此重設。",
 ];
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
@@ -347,6 +345,7 @@ const ACCOUNTS = {
 };
 const ACCOUNT_KEY = "fundLedger_currentAccount";
 const PASSWORD_VERIFIER_KEY = "fundLedger_Micy_passwordVerifier_v1";
+const BACKUP_REMINDER_KEY = "fundLedger_backupReminderDate";
 // 資料鍵（account 層級會自動加上 fundLedger_<帳號>_ 前綴）
 const STORAGE_KEY = "transactions";
 const NAV_KEY = "currentNav";
