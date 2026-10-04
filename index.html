@@ -329,11 +329,11 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.6.0";
+const APP_VERSION = "v1.6.1";
 const APP_RELEASE_DATE = "2026-10-04";
 const APP_CHANGES = [
   "新增「基金透視」：按已持有基金展示官方月報的主要持倉、比例、資料日期及來源；已發佈資料會自動更新。",
-  "可選用 OpenAI 生成附來源的公開市場觀察；由 GitHub 定時更新，不需要手機連 VPN，付費功能預設關閉。",
+  "可選用 DeepSeek 生成附官方來源的月報解讀（非即時新聞）；由 GitHub 定時更新，不需要手機連 VPN，付費功能預設關閉。",
   "沒有可靠當日基金淨值和事件來源時，不會編造漲跌原因或確定的走勢預測。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
@@ -3023,14 +3023,14 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
       {researchStatus === "ok" ? `官方月報最近核查：${checkedAt}。成份通常按月更新，非即時報價。` : researchStatus === "loading" ? "正在讀取最新公開研究資料…" : "暫時無法取得已發佈的更新，現顯示內建月報快照。"}
     </p>
     <section style={{ ...s.ledgerSection, padding: "14px 16px", marginBottom: 16, fontSize: 12, lineHeight: 1.7, color: "var(--text-3)" }}>
-      <h2 style={{ fontSize: 14, color: "var(--text)", margin: "0 0 7px" }}>市場觀察 · 公開資料</h2>
+      <h2 style={{ fontSize: 14, color: "var(--text)", margin: "0 0 7px" }}>AI 月報解讀 · 公開資料</h2>
       {account === "Demo" ? <p style={{ margin: 0 }}>Demo 是虛構帳本，這裡不會把真實基金新聞配對到虛構持倉。</p> : analysis ? <>
         <p style={{ margin: "0 0 9px", color: "var(--text-4)" }}>AI 整理於 {new Date(analysis.generatedAt).toLocaleString("zh-HK", { timeZone: "Asia/Hong_Kong" })}（香港時間）· 並非即時報價。{Date.now() - new Date(analysis.generatedAt).getTime() > 3 * 86400000 ? "這份研究已超過 3 天，請特別核對日期。" : ""}</p>
         <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{analysis.parts.map((part, index) => part.url ?
           <a key={index} href={part.url} target="_blank" rel="noopener noreferrer" title={part.title} style={{ color: "var(--accent)", textDecoration: "underline" }}>{part.text}</a> :
           <React.Fragment key={index}>{part.text}</React.Fragment>)}</div>
       </> : <p style={{ margin: 0 }}>{analysisStatus === "loading" ? "正在讀取公開市場觀察…" : "尚無已發佈的 AI 市場觀察；付費更新需由倉庫管理者選擇啟用。"}</p>}
-      <p style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 8, margin: "10px 0 0", fontSize: 11 }}>AI 解讀只根據公開月報和網絡資訊生成，可能遺漏或出錯；相關不等於因果，也不代表你的實際損益或買賣建議。請點來源核對。</p>
+      <p style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 8, margin: "10px 0 0", fontSize: 11 }}>DeepSeek 解讀只根據已核對的公開月報生成，沒有搜尋即時新聞或淨值，可能遺漏或出錯；相關不等於因果，也不代表你的實際損益或買賣建議。請點來源核對。</p>
     </section>
     {currentCodes.length === 0 && <p style={{ color: "var(--text-4)", fontSize: 13 }}>帳本目前沒有持倉；新增交易後會在這裡顯示對應基金。</p>}
     {currentCodes.map((code) => {

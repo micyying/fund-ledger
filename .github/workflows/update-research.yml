@@ -38,11 +38,12 @@ jobs:
       - name: Check five official public factsheets
         if: ${{ github.event_name != 'push' }}
         run: python scripts/update_research.py
-      - name: Create cited public market briefing (opt-in paid API)
+      - name: Create DeepSeek public factsheet interpretation (opt-in paid API)
         if: ${{ github.event_name != 'push' && vars.ENABLE_AI_RESEARCH == 'true' }}
         continue-on-error: true
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
         run: python scripts/update_analysis.py
       - name: Publish refreshed public research
         if: ${{ github.event_name != 'push' }}

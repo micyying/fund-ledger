@@ -2,7 +2,7 @@
 
 單檔 HTML 基金帳本，介面與本機資料由瀏覽器處理，頁面部署在 GitHub Pages；行情與股票搜尋會連到原 WorkBuddy API，OCR 在瀏覽器本機執行。
 
-目前版本：**GitHub版 · v1.6.0**（2026-10-04）。新增「基金透視」，按帳本目前持倉顯示已核對的官方月報主要持倉、比例、資料日期及來源。GitHub Actions 每個工作日核查月報並重新發佈網站；另可自行選擇啟用付費 OpenAI API，生成有來源連結的公開市場觀察。**AI 更新預設關閉**。此版本不會把使用者的交易或配置上傳至 GitHub。
+目前版本：**GitHub版 · v1.6.1**（2026-10-04）。新增「基金透視」，按帳本目前持倉顯示已核對的官方月報主要持倉、比例、資料日期及來源。GitHub Actions 每個工作日核查月報並重新發佈網站；另可自行選擇啟用付費 DeepSeek API，生成有來源連結的公開市場觀察。**AI 更新預設關閉**。此版本不會把使用者的交易或配置上傳至 GitHub。
 
 ## 檔案
 - `index.html` — 主程式
@@ -26,7 +26,7 @@ GitHub Pages 只提供靜態檔案，**沒有後端**；行情與股票搜尋仍
 | 資料表（配置計畫、基金持倉、銀行／平台彙總、每月資金進出） | ✅ 正常；現金流與投資報酬分開呈現 |
 | 圖表總覽（持倉配置、最近六個交易月份的資金淨流入） | ✅ 正常；不同幣種分開顯示 |
 | 基金透視（公開月報主要持倉） | ✅ 已核對五檔基金；每個工作日自動檢查月報，列明報告日期及來源。需啟用 GitHub Actions |
-| 近期市場觀察 | 可選：啟用 OpenAI API 後每個工作日搜尋公開資料並產生附來源的 AI 摘要；不保證有當日基金淨值，也不會把新聞直接斷言為漲跌原因 |
+| 近期市場觀察 | 可選：啟用 DeepSeek API 後每個工作日根據已核對的官方月報產生附來源的 AI 解讀（沒有即時新聞搜尋）；不保證有當日基金淨值，也不會把新聞直接斷言為漲跌原因 |
 | 自訂配置計畫與回升觀察提醒 | ✅ 開啟帳本時檢查已儲存淨值；需先分類基金、補齊淨值及換算匯率 |
 | JSON 備份匯出／匯入、CSV 匯出／匯入 | ✅ 正常 |
 | 手填「目前淨值」計算市值與浮動盈虧 | ✅ 正常 |
@@ -49,11 +49,14 @@ GitHub Actions 排程可能延遲，基金公司通常按月發佈持倉，並�
 
 ### 啟用公開市場 AI 摘要（選擇性付費）
 
-1. 自行在 [OpenAI Platform](https://platform.openai.com/api-keys) 建立 API key 並設定付費上限。**不要把 key 寫入 HTML、公開倉庫、JSON 備份或聊天訊息。** ChatGPT 訂閱與 API 是分開計費。
-2. 到此倉庫 **Settings → Secrets and variables → Actions → Repository secrets**，建立 `OPENAI_API_KEY`，值只在這裡貼入。然後到 **Repository variables** 建立 `ENABLE_AI_RESEARCH`，值設為 `true`。沒有這個變數時，即使倉庫已有 key，也不會進行付費呼叫。
-3. 在 **Actions → Update public fund research → Run workflow** 手動執行一次。成功後 `analysis.json` 會產生附來源的研究摘要並隨網站發佈。之後工作日香港時間約 21:25 更新；GitHub 排程可能延遲。要停止付費更新，把變數改為 `false`，並可刪除 secret。
+1. 在 [DeepSeek 開放平台](https://platform.deepseek.com/) 建立 API key 並確認 API 帳戶餘額。不要把 key 寫入 HTML、公開倉庫、JSON 備份或聊天訊息。
+2. 到倉庫 **Settings → Secrets and variables → Actions → Repository secrets** 建立 `DEEPSEEK_API_KEY`。在 **Repository variables** 將 `ENABLE_AI_RESEARCH` 設為 `true`。沒有明確啟用時不會進行付費呼叫。舊 `OPENAI_API_KEY` 不再使用，可刪除。
+3. 可選：設定 Repository variable `DEEPSEEK_MODEL`；預設 `deepseek-flash`。模型名稱須以 [DeepSeek 官方文件](https://api-docs.deepseek.com/api/create-chat-completion/) 為準。
+4. 在 **Actions → Update public fund research → Run workflow** 執行一次。成功後 `analysis.json` 隨網站發佈。之後工作日香港時間約 21:25 更新；排程可能延遲。停止付費更新可將 `ENABLE_AI_RESEARCH` 改為 `false`。
 
-每次定時執行最多一次 Responses API 請求，要求最多 5 次 web search 工具呼叫；實際費用由當時的模型、搜尋和 token 用量決定，請以 [OpenAI 官方定價](https://developers.openai.com/api/docs/pricing) 為準。由 GitHub 雲端向基金公司和 OpenAI 發出請求，**不需要你的手機開著，也不需要手機連 VPN**；但你所在地網絡仍須能開啟 GitHub Pages 才能閱讀更新。只傳公開基金代碼、官方月報快照與公開新聞；不讀取或傳送私人 JSON 備份、交易、金額、密碼。API 設定 `store=false`，但仍須了解 [OpenAI API 的資料處理政策](https://developers.openai.com/api/docs/guides/your-data)。AI 可能出錯，請按來源核對，不要把市場觀察當成確定預測或個人投資建議。
+每次執行最多一次 DeepSeek Chat Completions API 請求；同一香港日期已有 DeepSeek 摘要便略過。API 費用按模型和 token 用量計算，以 [官方定價](https://api-docs.deepseek.com/quick_start/pricing) 為準。請求由 GitHub 雲端執行，不需要手機開著或連 VPN。
+
+**此版沒有即時新聞搜尋。** DeepSeek 接口不能直接使用原 OpenAI Responses 的 `web_search` 工具，因此只解讀已核對的官方月報快照；不提供最新 NAV、今日漲跌原因或假冒最新新聞。若要恢復新聞摘要，需另外接入新聞／搜尋來源。來源連結由程式從月報快照加入，不採用模型生成的 URL。只傳公開基金資料，不讀取私人帳本、交易、金額或密碼。AI 解讀仍可能出錯，應按月報原文核對。失敗時保留上次摘要並顯示其原有日期。
 
 ## 解鎖密碼
 
