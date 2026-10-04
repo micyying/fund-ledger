@@ -42,7 +42,7 @@ jobs:
         if: ${{ github.event_name != 'push' && vars.ENABLE_AI_RESEARCH == 'true' }}
         continue-on-error: true
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || secrets.DEEPSEEK_API }}
           DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
         run: python scripts/update_analysis.py
       - name: Publish refreshed public research
