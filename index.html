@@ -329,12 +329,47 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.5.2";
-const APP_RELEASE_DATE = "2026-09-28";
+const APP_VERSION = "v1.6.0";
+const APP_RELEASE_DATE = "2026-10-04";
 const APP_CHANGES = [
-  "將「我的配置計畫」從資產總覽移至資料表，保留設定及回升觀察提醒。",
-  "建議以 JSON 作完整備份；CSV 僅供檢視及匯入交易紀錄。",
+  "新增「基金透視」：按已持有基金展示官方月報的主要持倉、比例、資料日期及來源；已發佈資料會自動更新。",
+  "可選用 OpenAI 生成附來源的公開市場觀察；由 GitHub 定時更新，不需要手機連 VPN，付費功能預設關閉。",
+  "沒有可靠當日基金淨值和事件來源時，不會編造漲跌原因或確定的走勢預測。",
 ];
+// 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
+// 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
+const FUND_RESEARCH_PROFILES = {
+  U50005: {
+    title: "恒生指數基金", asOf: "2026-08-31",
+    source: "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_hsif_en.pdf",
+    holdings: [["滙豐控股", 8.86], ["騰訊控股", 7.62], ["阿里巴巴－W", 7.06], ["建設銀行", 5.43], ["友邦保險", 4.76], ["工商銀行", 3.71]],
+    watch: "主要留意港股金融與大型科技股、利率及中國經濟消息。",
+  },
+  U50011: {
+    title: "恒生中國新經濟指數基金", asOf: "2026-08-31",
+    source: "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_china_new_idx_en.pdf",
+    holdings: [["騰訊控股", 10.28], ["阿里巴巴－ADR", 9.53], ["寧德時代", 5.14], ["中際旭創", 4.05], ["新易盛", 2.69], ["拼多多－ADR", 2.34]],
+    watch: "同時涉及內地 A 股、港股和美國上市中概股；留意科技及消費企業業績、監管與跨市場交易日。",
+  },
+  U45076: {
+    title: "恒生中國企業指數基金", asOf: "2026-08-31",
+    source: "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_china_h_idx_en.pdf",
+    holdings: [["建設銀行", 8.31], ["騰訊控股", 7.72], ["阿里巴巴－W", 7.16], ["工商銀行", 5.68], ["小米－W", 4.56], ["中國移動", 4.49]],
+    watch: "主要留意港股上市的中國企業，特別是金融、互聯網及中國政策消息。",
+  },
+  U50004: {
+    title: "滙豐環球股票指數基金", asOf: "2026-08-31",
+    source: "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50004_en.pdf",
+    holdings: [["NVIDIA", 5.43], ["Apple", 4.98], ["Microsoft", 3.83], ["Alphabet", 3.80], ["Amazon", 2.70], ["Broadcom", 1.79]],
+    watch: "月報顯示美國股票比重較高；留意大型科技公司業績、美元與全球利率。",
+  },
+  U50009: {
+    title: "滙豐美國股票指數基金", asOf: "2026-08-31",
+    source: "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50009_en.pdf",
+    holdings: [["NVIDIA", 8.01], ["Apple", 6.97], ["Microsoft", 5.64], ["Alphabet", 5.36], ["Amazon", 3.81], ["Broadcom", 2.63]],
+    watch: "追蹤標普 500 指數；留意美國大型科技公司業績、聯儲局政策與美債收益率。",
+  },
+};
 // 頁面圖標與主屏幕圖標共用滿版 PNG
 const APP_ICON_SRC = document.querySelector('link[data-github-icon="filled"]')?.href ||
   document.querySelector('link[rel="apple-touch-icon"]')?.href || "";
@@ -2975,6 +3010,65 @@ function AllocationSettingsModal({ plan, holdings, fundNames, navMap, priceHisto
   </div>;
 }
 
+function FundResearch({ holdings, fundNames, account, profiles, checkedAt, researchStatus, analysis, analysisStatus }) {
+  const currentCodes = Object.keys(holdings || {})
+    .filter((code) => holdings[code] && holdings[code].units > 0)
+    .sort((a, b) => Number(!!profiles[b]) - Number(!!profiles[a]) || a.localeCompare(b));
+  return <>
+    <div style={s.sectionTitle}><span style={s.sectionBar} />基金透視</div>
+    <p style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.65, margin: "0 0 13px" }}>
+      只顯示這個帳號目前持有的基金；下列比例是基金本身的公開月報資料，不是你帳戶的配置比例。前六大以外的持倉未列出。
+    </p>
+    <p role="status" style={{ fontSize: 11, color: researchStatus === "ok" ? "var(--text-4)" : "var(--warn)", margin: "0 0 12px" }}>
+      {researchStatus === "ok" ? `官方月報最近核查：${checkedAt}。成份通常按月更新，非即時報價。` : researchStatus === "loading" ? "正在讀取最新公開研究資料…" : "暫時無法取得已發佈的更新，現顯示內建月報快照。"}
+    </p>
+    <section style={{ ...s.ledgerSection, padding: "14px 16px", marginBottom: 16, fontSize: 12, lineHeight: 1.7, color: "var(--text-3)" }}>
+      <h2 style={{ fontSize: 14, color: "var(--text)", margin: "0 0 7px" }}>市場觀察 · 公開資料</h2>
+      {account === "Demo" ? <p style={{ margin: 0 }}>Demo 是虛構帳本，這裡不會把真實基金新聞配對到虛構持倉。</p> : analysis ? <>
+        <p style={{ margin: "0 0 9px", color: "var(--text-4)" }}>AI 整理於 {new Date(analysis.generatedAt).toLocaleString("zh-HK", { timeZone: "Asia/Hong_Kong" })}（香港時間）· 並非即時報價。{Date.now() - new Date(analysis.generatedAt).getTime() > 3 * 86400000 ? "這份研究已超過 3 天，請特別核對日期。" : ""}</p>
+        <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{analysis.parts.map((part, index) => part.url ?
+          <a key={index} href={part.url} target="_blank" rel="noopener noreferrer" title={part.title} style={{ color: "var(--accent)", textDecoration: "underline" }}>{part.text}</a> :
+          <React.Fragment key={index}>{part.text}</React.Fragment>)}</div>
+      </> : <p style={{ margin: 0 }}>{analysisStatus === "loading" ? "正在讀取公開市場觀察…" : "尚無已發佈的 AI 市場觀察；付費更新需由倉庫管理者選擇啟用。"}</p>}
+      <p style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 8, margin: "10px 0 0", fontSize: 11 }}>AI 解讀只根據公開月報和網絡資訊生成，可能遺漏或出錯；相關不等於因果，也不代表你的實際損益或買賣建議。請點來源核對。</p>
+    </section>
+    {currentCodes.length === 0 && <p style={{ color: "var(--text-4)", fontSize: 13 }}>帳本目前沒有持倉；新增交易後會在這裡顯示對應基金。</p>}
+    {currentCodes.map((code) => {
+      // Demo has fictional holdings; a reused code must not imply a real fund match.
+      const profile = account === "Demo" ? null : profiles[code];
+      const name = fundNames[code] || (profile && profile.title) || code;
+      if (!profile) return <section key={code} style={{ ...s.ledgerSection, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{name} <span style={{ color: "var(--text-4)", fontSize: 11, fontWeight: 400 }}>{code}</span></div>
+        <p style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.6 }}>{account === "Demo" ? "Demo 是虛構資料，不會配對真實基金的官方持倉。" : "尚未找到與此基金代碼及股份類別核對過的官方持倉；不會用相似名稱基金的資料代替。"}</p>
+      </section>;
+      const ageDays = Math.max(0, Math.floor((Date.now() - new Date(profile.asOf + "T00:00:00").getTime()) / 86400000));
+      return <section key={code} style={{ ...s.ledgerSection, padding: 16, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 15, color: "var(--text)" }}>{name}</h2>
+            <div style={{ color: "var(--text-4)", fontSize: 11, marginTop: 3 }}>{code} · 官方：{profile.title}</div>
+          </div>
+          <a href={profile.source} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", fontSize: 11, whiteSpace: "nowrap" }}>查看官方月報 ↗</a>
+        </div>
+        <p style={{ color: ageDays > 45 ? "var(--warn)" : "var(--text-4)", fontSize: 11, lineHeight: 1.55, margin: "11px 0 13px" }}>
+          持倉資料截至 {profile.asOf}；距今約 {ageDays} 天，最新權重可能已變。官方連結會更新，若月報日期與此頁不同，請以最新月報為準。
+        </p>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 9 }}>主要持倉 · 基金資產佔比</div>
+        {profile.holdings.map(([stock, weight]) => <div key={stock} style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) 2fr 44px", gap: 7, alignItems: "center", marginBottom: 8, fontSize: 11.5 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={stock}>{stock}</span>
+          <div role="img" aria-label={`${stock} 佔基金 ${weight.toFixed(2)}%`} style={{ height: 9, borderRadius: 5, background: "var(--inset)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${Math.min(weight / 12 * 100, 100)}%`, background: "var(--accent)", borderRadius: 5 }} />
+          </div>
+          <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: "var(--text-2)" }}>{weight.toFixed(2)}%</span>
+        </div>)}
+        <div style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 11, marginTop: 11, fontSize: 11.5, lineHeight: 1.6, color: "var(--text-3)" }}>
+          <strong style={{ color: "var(--text-2)" }}>值得關注：</strong>{profile.watch}
+        </div>
+      </section>;
+    })}
+  </>;
+}
+
 // ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
@@ -2995,6 +3089,50 @@ function FundLedger() {
   const [activeHouse, setActiveHouse] = useState("__all__");
   const [hideZeroUnits, setHideZeroUnits] = useState(false);
   const [error, setError] = useState("");
+  const [researchProfiles, setResearchProfiles] = useState(FUND_RESEARCH_PROFILES);
+  const [researchCheckedAt, setResearchCheckedAt] = useState("");
+  const [researchStatus, setResearchStatus] = useState("loading");
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState("loading");
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`research.json?t=${Date.now()}`, { cache: "no-store" })
+      .then((response) => { if (!response.ok) throw new Error("Research snapshot unavailable"); return response.json(); })
+      .then((data) => {
+        if (data.schemaVersion !== 1 || !/^20\d{2}-\d{2}-\d{2}$/.test(data.checkedAt) || !data.funds || typeof data.funds !== "object") throw new Error("Invalid research snapshot");
+        const parsed = {};
+        for (const [code, fund] of Object.entries(data.funds)) {
+          if (!/^U\d{5}$/.test(code) || !fund || !/^20\d{2}-\d{2}-\d{2}$/.test(fund.asOf) ||
+              !/^https:\/\/(cms\.hangsenginvestment\.com|www\.hfi\.hsbc\.com\.hk)\//.test(fund.source) ||
+              typeof fund.title !== "string" || typeof fund.watch !== "string" ||
+              !Array.isArray(fund.holdings) || fund.holdings.length < 6 ||
+              !fund.holdings.every((holding) => Array.isArray(holding) && holding.length === 2 && typeof holding[0] === "string" && Number.isFinite(holding[1]) && holding[1] > 0 && holding[1] < 100)) {
+            throw new Error("Invalid fund research entry");
+          }
+          parsed[code] = fund;
+        }
+        if (!cancelled) { setResearchProfiles(parsed); setResearchCheckedAt(data.checkedAt); setResearchStatus("ok"); }
+      })
+      .catch(() => { if (!cancelled) setResearchStatus("fallback"); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`analysis.json?t=${Date.now()}`, { cache: "no-store" })
+      .then((response) => { if (!response.ok) throw new Error("Market briefing unavailable"); return response.json(); })
+      .then((data) => {
+        if (data.schemaVersion !== 1 || typeof data.generatedAt !== "string" || !Number.isFinite(Date.parse(data.generatedAt)) ||
+            !Array.isArray(data.parts) || data.parts.length < 2 || data.parts.length > 200 ||
+            !data.parts.some((part) => part.url) ||
+            !data.parts.every((part) => part && typeof part.text === "string" && part.text.length <= 12000 &&
+              (!part.url || (typeof part.url === "string" && /^https:\/\/[^\s@/]+\//.test(part.url))))) {
+          throw new Error("Invalid market briefing");
+        }
+        if (!cancelled) { setAnalysis(data); setAnalysisStatus("ok"); }
+      })
+      .catch(() => { if (!cancelled) setAnalysisStatus("unavailable"); });
+    return () => { cancelled = true; };
+  }, []);
 
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -4343,6 +4481,7 @@ function FundLedger() {
               canRefresh={quoteCodes.length > 0} />
           </>
         )}
+        {activeTab === "research" && <FundResearch holdings={holdings} fundNames={fundNames} account={account} profiles={researchProfiles} checkedAt={researchCheckedAt} researchStatus={researchStatus} analysis={analysis} analysisStatus={analysisStatus} />}
       </div>
 
       {/* 底部 Tab 導航 */}
@@ -4356,6 +4495,9 @@ function FundLedger() {
         </button>
         <button className={"fl-tab" + (activeTab === "tables" ? " active" : "")} onClick={() => setActiveTab("tables")}>
           <ListOrdered size={20} /> <span>資料表</span>
+        </button>
+        <button className={"fl-tab" + (activeTab === "research" ? " active" : "")} onClick={() => setActiveTab("research")}>
+          <BookOpen size={20} /> <span>基金透視</span>
         </button>
         </div>
       </nav>

@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-03",
+  "funds": {
+    "U50005": {
+      "title": "恒生指數基金",
+      "asOf": "2026-08-31",
+      "source": "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_hsif_en.pdf",
+      "holdings": [
+        [
+          "滙豐控股",
+          8.86
+        ],
+        [
+          "騰訊控股",
+          7.62
+        ],
+        [
+          "阿里巴巴－W",
+          7.06
+        ],
+        [
+          "建設銀行",
+          5.43
+        ],
+        [
+          "友邦保險",
+          4.76
+        ],
+        [
+          "工商銀行",
+          3.71
+        ]
+      ],
+      "watch": "主要留意港股金融與大型科技股、利率及中國經濟消息。"
+    },
+    "U50011": {
+      "title": "恒生中國新經濟指數基金",
+      "asOf": "2026-08-31",
+      "source": "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_china_new_idx_en.pdf",
+      "holdings": [
+        [
+          "騰訊控股",
+          10.28
+        ],
+        [
+          "阿里巴巴－ADR",
+          9.53
+        ],
+        [
+          "寧德時代",
+          5.14
+        ],
+        [
+          "中際旭創",
+          4.05
+        ],
+        [
+          "新易盛",
+          2.69
+        ],
+        [
+          "拼多多－ADR",
+          2.34
+        ]
+      ],
+      "watch": "同時涉及內地 A 股、港股和美國上市中概股；留意科技及消費企業業績、監管與跨市場交易日。"
+    },
+    "U45076": {
+      "title": "恒生中國企業指數基金",
+      "asOf": "2026-08-31",
+      "source": "https://cms.hangsenginvestment.com/cms/ivp/hsvm/document/op_china_h_idx_en.pdf",
+      "holdings": [
+        [
+          "建設銀行",
+          8.31
+        ],
+        [
+          "騰訊控股",
+          7.72
+        ],
+        [
+          "阿里巴巴－W",
+          7.16
+        ],
+        [
+          "工商銀行",
+          5.68
+        ],
+        [
+          "小米－W",
+          4.56
+        ],
+        [
+          "中國移動",
+          4.49
+        ]
+      ],
+      "watch": "主要留意港股上市的中國企業，特別是金融、互聯網及中國政策消息。"
+    },
+    "U50004": {
+      "title": "滙豐環球股票指數基金",
+      "asOf": "2026-08-31",
+      "source": "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50004_en.pdf",
+      "holdings": [
+        [
+          "NVIDIA",
+          5.43
+        ],
+        [
+          "Apple",
+          4.98
+        ],
+        [
+          "Microsoft",
+          3.83
+        ],
+        [
+          "Alphabet",
+          3.8
+        ],
+        [
+          "Amazon",
+          2.7
+        ],
+        [
+          "Broadcom",
+          1.79
+        ]
+      ],
+      "watch": "月報顯示美國股票比重較高；留意大型科技公司業績、美元與全球利率。"
+    },
+    "U50009": {
+      "title": "滙豐美國股票指數基金",
+      "asOf": "2026-08-31",
+      "source": "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50009_en.pdf",
+      "holdings": [
+        [
+          "NVIDIA",
+          8.01
+        ],
+        [
+          "Apple",
+          6.97
+        ],
+        [
+          "Microsoft",
+          5.64
+        ],
+        [
+          "Alphabet",
+          5.36
+        ],
+        [
+          "Amazon",
+          3.81
+        ],
+        [
+          "Broadcom",
+          2.63
+        ]
+      ],
+      "watch": "追蹤標普 500 指數；留意美國大型科技公司業績、聯儲局政策與美債收益率。"
+    }
+  }
+}

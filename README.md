@@ -2,23 +2,20 @@
 
 單檔 HTML 基金帳本，介面與本機資料由瀏覽器處理，頁面部署在 GitHub Pages；行情與股票搜尋會連到原 WorkBuddy API，OCR 在瀏覽器本機執行。
 
-目前本機待發佈版本：**GitHub版 · v1.5.2**（2026-09-28）。將「我的配置計畫」從資產總覽移至資料表，設定與回升觀察提醒保持不變。v1.5.1 已修正週一、週五解鎖後的空白頁。
+目前版本：**GitHub版 · v1.6.0**（2026-10-04）。新增「基金透視」，按帳本目前持倉顯示已核對的官方月報主要持倉、比例、資料日期及來源。GitHub Actions 每個工作日核查月報並重新發佈網站；另可自行選擇啟用付費 OpenAI API，生成有來源連結的公開市場觀察。**AI 更新預設關閉**。此版本不會把使用者的交易或配置上傳至 GitHub。
 
 ## 檔案
 - `index.html` — 主程式
 - `micy-icon.png` — 主屏幕與頁面內使用的滿版圖標
 - `micy-icon.svg` — 同款網頁圖標
+- `research.json` — 只有官方公開的基金月報資料，沒有個人帳本內容
+- `analysis.json` — 可選的公開市場觀察；尚未啟用時是空內容
+- `scripts/update_research.py`、`scripts/update_analysis.py`、`.github/workflows/update-research.yml` — 自動核查月報，選擇性生成 AI 研究並直接發佈 Pages
 - `.nojekyll` — 避免 GitHub 用 Jekyll 重新處理，請一併上傳
 - `README.md` — 本說明
 
-## 部署步驟（約 3 分鐘）
-1. 到 https://github.com/new 建立新 repository（例如 `fund-ledger`），**Public**（Private 也能開 Pages，但需付費方案），勾選 Add a README 可省略。
-2. 在 repo 頁面點 **Add file → Upload files**，把 `index.html`、`micy-icon.png`、`micy-icon.svg` 與 `.nojekyll` 拖進去，Commit。
-3. 進 **Settings → Pages**，Source 選 `Deploy from a branch`，Branch 選 `main`、資料夾 `/ (root)`，按 Save。
-4. 等 1–2 分鐘，網址就會是：
-   `https://<你的帳號>.github.io/fund-ledger/`
-
-之後只要重新上傳 `index.html` 覆蓋，就是**原地更新同一個網址**（這正是之前雲端部署做不到的）。
+## 現有倉庫部署
+倉庫是 [`micyying/fund-ledger`](https://github.com/micyying/fund-ledger)，網站是 https://micyying.github.io/fund-ledger/ 。此版本須在 **Settings → Pages → Build and deployment → Source** 改選 **GitHub Actions**，再於 **Actions** 手動執行一次 `Update public fund research`。以後推送 `main` 或週一至週五的定時更新，都會由同一個 workflow 發佈 Pages。不要再選「Deploy from a branch」：GitHub 官方說明，由 workflow 的 `GITHUB_TOKEN` 推送的 commit 不會觸發分支型 Pages 建置。
 
 ## ⚠️ 純靜態的先天限制
 GitHub Pages 只提供靜態檔案，**沒有後端**；行情與股票搜尋仍呼叫原 WorkBuddy API。若該 API 不可用，相關功能會停用：
@@ -28,6 +25,8 @@ GitHub Pages 只提供靜態檔案，**沒有後端**；行情與股票搜尋仍
 | 交易紀錄、持倉、已實現/未實現損益、淨值圖表 | ✅ 正常 |
 | 資料表（配置計畫、基金持倉、銀行／平台彙總、每月資金進出） | ✅ 正常；現金流與投資報酬分開呈現 |
 | 圖表總覽（持倉配置、最近六個交易月份的資金淨流入） | ✅ 正常；不同幣種分開顯示 |
+| 基金透視（公開月報主要持倉） | ✅ 已核對五檔基金；每個工作日自動檢查月報，列明報告日期及來源。需啟用 GitHub Actions |
+| 近期市場觀察 | 可選：啟用 OpenAI API 後每個工作日搜尋公開資料並產生附來源的 AI 摘要；不保證有當日基金淨值，也不會把新聞直接斷言為漲跌原因 |
 | 自訂配置計畫與回升觀察提醒 | ✅ 開啟帳本時檢查已儲存淨值；需先分類基金、補齊淨值及換算匯率 |
 | JSON 備份匯出／匯入、CSV 匯出／匯入 | ✅ 正常 |
 | 手填「目前淨值」計算市值與浮動盈虧 | ✅ 正常 |
@@ -35,12 +34,26 @@ GitHub Pages 只提供靜態檔案，**沒有後端**；行情與股票搜尋仍
 | 雲端同步（跨裝置共享） | ⛔ 舊固定同步代碼已停用；需要有身分驗證的新後端 |
 | 截圖 OCR 匯入持倉 | ✅ 在瀏覽器本機辨識（Tesseract.js） |
 | 股票搜尋 | ⚠️ 常用標的可本機搜尋；完整搜尋需後端跨域代理 |
-| AI 助理 | 已移除 |
+| 舊版 AI 助理 | 已移除；新增的公開研究摘要與私人帳本隔離 |
 | 備份提醒 | ✅ 每週一、五開啟並解鎖帳本時提醒 |
 
 備份請優先下載 **JSON**：它包含交易、目前淨值、基金名稱、價格歷史、追蹤設定和配置計畫；CSV 只匯出交易欄位，適合用試算表檢視，不應作為唯一備份。兩種檔案都不包含解鎖密碼，也都可能含私人財務資料，請妥善保存。
 
 GitHub Pages 讓頁面網址穩定，但目前原 WorkBuddy API 沒有允許 GitHub Pages 跨域請求的回應標頭。跨設備同步還需要有身分驗證與資料保護的新後端；不能再用公開的固定同步代碼。完整股票搜尋仍需要後端跨域代理。OCR 已改為在瀏覽器本機執行，不會把截圖上傳到 WorkBuddy。
+
+## 基金透視的資料邊界
+
+此分頁只根據帳本本機持倉決定要顯示哪些公開基金資料；公開程式碼中只有基金公司月報的主要持倉快照，不含用戶的交易、金額或帳號。初版核對了 `U50005`、`U50011`、`U45076`、`U50004`、`U50009`。每張卡片均標示資料截至日期並連到基金公司月報。開啟 App 時會讀取同一網站上的 `research.json`；若讀取失敗，會明示使用內建快照。官方月報網址可能更新，因此頁內舊快照和連結中的最新月報可能不同，以最新官方文件為準。前六大持倉並不是完整組合，也不等於使用者個人資產配置。當日基金淨值與當日新聞未經驗證時，程式不會提供虛假的「今日漲跌原因」或確定的價格趨勢。
+
+GitHub Actions 排程可能延遲，基金公司通常按月發佈持倉，並非每天更新成份。自動核查一旦遇到來源無法下載、基金名稱／日期不符、或持倉格式改變，更新會中止並保留上一版資料；網站不會把舊月報冒充成當日成份。倉庫需允許此 workflow 的 Contents 寫入和 Pages 部署。可在 Actions 手動執行 `Update public fund research` 驗證第一次更新。
+
+### 啟用公開市場 AI 摘要（選擇性付費）
+
+1. 自行在 [OpenAI Platform](https://platform.openai.com/api-keys) 建立 API key 並設定付費上限。**不要把 key 寫入 HTML、公開倉庫、JSON 備份或聊天訊息。** ChatGPT 訂閱與 API 是分開計費。
+2. 到此倉庫 **Settings → Secrets and variables → Actions → Repository secrets**，建立 `OPENAI_API_KEY`，值只在這裡貼入。然後到 **Repository variables** 建立 `ENABLE_AI_RESEARCH`，值設為 `true`。沒有這個變數時，即使倉庫已有 key，也不會進行付費呼叫。
+3. 在 **Actions → Update public fund research → Run workflow** 手動執行一次。成功後 `analysis.json` 會產生附來源的研究摘要並隨網站發佈。之後工作日香港時間約 21:25 更新；GitHub 排程可能延遲。要停止付費更新，把變數改為 `false`，並可刪除 secret。
+
+每次定時執行最多一次 Responses API 請求，要求最多 5 次 web search 工具呼叫；實際費用由當時的模型、搜尋和 token 用量決定，請以 [OpenAI 官方定價](https://developers.openai.com/api/docs/pricing) 為準。由 GitHub 雲端向基金公司和 OpenAI 發出請求，**不需要你的手機開著，也不需要手機連 VPN**；但你所在地網絡仍須能開啟 GitHub Pages 才能閱讀更新。只傳公開基金代碼、官方月報快照與公開新聞；不讀取或傳送私人 JSON 備份、交易、金額、密碼。API 設定 `store=false`，但仍須了解 [OpenAI API 的資料處理政策](https://developers.openai.com/api/docs/guides/your-data)。AI 可能出錯，請按來源核對，不要把市場觀察當成確定預測或個人投資建議。
 
 ## 解鎖密碼
 
