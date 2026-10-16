@@ -329,12 +329,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.7.0";
+const APP_VERSION = "v1.7.1";
 const APP_RELEASE_DATE = "2026-10-16";
 const APP_CHANGES = [
-  "資產總覽新增持倉截圖匯入：在手機本機辨識市值和單位數目，計算每單位估算淨值。",
-  "先核對基金配對與辨識數字，再一次更新多檔基金的「目前淨值」；不會將截圖上傳或匯入盈虧。",
-  "截圖推算值會標示來源，不冒充有正式報價日期的當日基金淨值。",
+  "持倉截圖會自動配對帳本基金，支援簡繁體、恆／恒、匯／滙／汇、官方名稱與常見簡稱。",
+  "已配對的有效項目會自動勾選，可直接批次更新淨值；配錯時仍可改選基金或取消該列。",
+  "單位數或價格差異改為提示，不再要求逐檔勾選；幣別不符和重複配對仍會攔截。截圖只在本機辨識。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -2218,9 +2218,10 @@ async function searchStockResults(term) {
 function normalizePortfolioName(name) {
   return String(name || "").normalize("NFKC").toLowerCase()
     .replace(/[匯滙汇]/g, "汇").replace(/豐/g, "丰").replace(/國/g, "国")
-    .replace(/環/g, "环").replace(/經/g, "经").replace(/濟/g, "济")
+    .replace(/恆/g, "恒").replace(/環/g, "环").replace(/經/g, "经").replace(/濟/g, "济")
     .replace(/數/g, "数").replace(/單/g, "单").replace(/華/g, "华")
-    .replace(/證/g, "证").replace(/[\s·・（）()\-]/g, "");
+    .replace(/證/g, "证").replace(/標/g, "标").replace(/業/g, "业").replace(/類/g, "类").replace(/幣/g, "币")
+    .replace(/[\s·・（）()\-]/g, "");
 }
 function portfolioNumber(text) {
   const match = String(text || "").match(/\d[\d,，.．]*/);
@@ -2270,17 +2271,49 @@ function parsePortfolioNavText(text) {
   flush();
   return rows;
 }
-function matchPortfolioFund(name, fundCodes, fundNames) {
+function portfolioFundFamily(name) {
+  const n = normalizePortfolioName(name);
+  // 僅擴展常見簡稱，不把「環球債券」或其他公司的環球基金當成同一檔。
+  const core = n.replace(/^(?:汇丰|hsbc|恒生)/, "").replace(/(?:股票)?(?:指数)?(?:基金)?$/, "");
+  if (/^(?:中国)?新经济$/.test(core)) return "china-new-economy";
+  if (/^(?:中国企业|国企)$/.test(core)) return "china-enterprise";
+  if (/^(?:美国|标普500|s&p500)$/.test(core)) return "us";
+  if (/^(?:环球|全球)$/.test(core)) return "global";
+  if (/^(?:恒生指数|恒指)(?:基金)?$/.test(n)) return "hang-seng";
+  return "";
+}
+function matchPortfolioFund(name, fundCodes, fundNames, { holdings = {}, units = 0, currency = "", useOfficialProfiles = true } = {}) {
   const normalized = normalizePortfolioName(name);
   if (!normalized) return "";
-  const matches = fundCodes.filter((code) => {
-    // 帳本自訂名稱優先；不可用公開基金檔案覆蓋使用者實際記錄的名稱。
-    const names = fundNames[code] ? [fundNames[code]] : [FUND_RESEARCH_PROFILES[code]?.title].filter(Boolean);
-    return names.some((candidate) => normalizePortfolioName(candidate) === normalized);
-  });
-  return matches.length === 1 ? matches[0] : "";
+  const family = portfolioFundFamily(normalized);
+  const provider = (n) => /汇丰|hsbc/.test(n) ? "hsbc" : /恒生|恒指/.test(n) ? "hang-seng" : "";
+  const compact = (n) => n.replace(/指数|股票|基金/g, "");
+  const matches = fundCodes.map((code) => {
+    // 真實帳本按代碼補上官方別名，但不改寫使用者名稱；Demo 的代碼是虛構用途。
+    const names = [fundNames[code], useOfficialProfiles && FUND_RESEARCH_PROFILES[code]?.title].filter(Boolean);
+    const hasCode = (String(name).toUpperCase().match(/[A-Z]+\d+/g) || []).includes(code.toUpperCase());
+    let score = hasCode ? 120 : 0;
+    for (const candidate of names) {
+      const n = normalizePortfolioName(candidate);
+      if (n === normalized) { score = Math.max(score, 100); continue; }
+      const otherFamily = portfolioFundFamily(n);
+      if (family && otherFamily && family !== otherFamily) continue;
+      if (provider(normalized) && provider(n) && provider(normalized) !== provider(n)) continue;
+      // 名稱縮寫可省略「股票／指數／基金」，不能只因共享「基金」兩字就配對。
+      if (compact(n).length >= 4 && compact(n) === compact(normalized)) score = Math.max(score, 90);
+      else if (family && family === otherFamily) score = Math.max(score, 70);
+    }
+    // 同系列多檔時，用幣別及單位數輔助選擇；數字不會單獨觸發配對。
+    if (score) {
+      if (currency && currency === (holdings[code]?.currency || DEFAULT_CCY)) score += 4;
+      const ledgerUnits = Number(holdings[code]?.units);
+      if (Number(units) > 0 && ledgerUnits > 0 && Math.abs(ledgerUnits - Number(units)) / Number(units) <= 0.01) score += 2;
+    }
+    return { code, score };
+  }).filter((match) => match.score > 0).sort((a, b) => b.score - a.score);
+  return matches.length && (!matches[1] || matches[0].score > matches[1].score) ? matches[0].code : "";
 }
-function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply, onClose }) {
+function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, account, onApply, onClose }) {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
@@ -2310,16 +2343,13 @@ function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply,
         setError("未找到「基金名稱／市值／單位數目」。請選清晰的「我的持倉」截圖，或改為手動輸入淨值。");
       } else {
         setRows(parsed.map((row, i) => {
-          const code = matchPortfolioFund(row.name, fundCodes, fundNames);
+          const code = matchPortfolioFund(row.name, fundCodes, fundNames, {
+            holdings, units: row.units, currency: row.currency, useOfficialProfiles: account !== "Demo",
+          });
           const units = Number(row.units), price = Number(row.marketValue) / units;
-          const ledgerUnits = Number(holdings[code]?.units);
-          const oldNav = Number(navMap[code]);
-          const unitsDiffer = ledgerUnits > 0 && units > 0 && Math.abs(ledgerUnits - units) / units > 0.01;
           const currencyDiffer = code && row.currency && row.currency !== (holdings[code]?.currency || DEFAULT_CCY);
-          const priceDiffers = oldNav > 0 && Number.isFinite(price) &&
-            (price / oldNav > 1.5 || price / oldNav < 0.5);
           return { ...row, id: i, code,
-            selected: Boolean(code && Number.isFinite(price) && price > 0 && !unitsDiffer && !currencyDiffer && !priceDiffers) };
+            selected: Boolean(code && Number.isFinite(price) && price > 0 && !currencyDiffer) };
         }));
       }
     } catch (e) {
@@ -2330,7 +2360,8 @@ function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply,
     }
   }
   const update = (id, field, value) =>
-    setRows((prev) => prev.map((row) => row.id === id ? { ...row, [field]: value } : row));
+    setRows((prev) => prev.map((row) => row.id === id ? { ...row, [field]: value,
+      ...(field === "code" ? { selected: Boolean(value) } : {}) } : row));
   const valid = rows.filter((row) => row.selected && row.code &&
     Number(row.marketValue) > 0 && Number(row.units) > 0 &&
     (!row.currency || row.currency === (holdings[row.code]?.currency || DEFAULT_CCY)) &&
@@ -2348,7 +2379,7 @@ function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply,
           選銀行 App「我的持倉」截圖，可一次選多張。在這部裝置辨識，圖片不會上傳；每單位估算價＝截圖市值 ÷ 截圖單位數。截圖沒有正式淨值日期，結果不是即時報價，請先核對數字與基金。
         </p>
         <p style={{ fontSize: 11, lineHeight: 1.6, color: "var(--warn)" }}>
-          無法配對、幣別不一致、單位數與帳本相差逾 1%，或估算價與原有淨值相差逾 50% 的項目，預設不勾選；幣別不一致的項目不會套用。
+          基金會自動配對並勾選，配錯時直接改選即可。單位數或價格差異會提示；無法配對或幣別不符的項目不會自動套用。
         </p>
         <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
         <button type="button" style={s.parseBtn} disabled={busy} onClick={() => fileRef.current?.click()}>
@@ -2374,7 +2405,10 @@ function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply,
               <input type="checkbox" checked={row.selected} onChange={(e) => update(row.id, "selected", e.target.checked)} />
               <strong>{row.name}</strong>
             </label>
-            <select value={row.code} onChange={(e) => update(row.id, "code", e.target.value)}
+            <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 8 }}>
+              {row.code ? "已配對帳本基金 · 如有錯誤可在下方修改" : "未找到唯一配對，請選擇基金"}
+            </div>
+            <select aria-label={`${row.name} 對應基金`} value={row.code} onChange={(e) => update(row.id, "code", e.target.value)}
               style={{ ...s.previewInput, width: "100%", marginTop: 8 }}>
               <option value="">請選擇帳本中的對應基金</option>
               {fundCodes.map((code) => <option key={code} value={code}>{fundNames[code] || FUND_RESEARCH_PROFILES[code]?.title || code} · {code}</option>)}
@@ -4815,7 +4849,7 @@ function FundLedger() {
       )}
 
       {portfolioNavOcrOpen && (
-        <PortfolioNavOcrModal holdings={holdings} fundCodes={fundCodes} fundNames={fundNames}
+        <PortfolioNavOcrModal holdings={holdings} fundCodes={fundCodes} fundNames={fundNames} account={account}
           navMap={navMap} onApply={applyPortfolioNav} onClose={() => setPortfolioNavOcrOpen(false)} />
       )}
 
