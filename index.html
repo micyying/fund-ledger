@@ -329,12 +329,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.6.1";
-const APP_RELEASE_DATE = "2026-10-04";
+const APP_VERSION = "v1.7.0";
+const APP_RELEASE_DATE = "2026-10-16";
 const APP_CHANGES = [
-  "新增「基金透視」：按已持有基金展示官方月報的主要持倉、比例、資料日期及來源；已發佈資料會自動更新。",
-  "可選用 DeepSeek 生成附官方來源的月報解讀（非即時新聞）；由 GitHub 定時更新，不需要手機連 VPN，付費功能預設關閉。",
-  "沒有可靠當日基金淨值和事件來源時，不會編造漲跌原因或確定的走勢預測。",
+  "資產總覽新增持倉截圖匯入：在手機本機辨識市值和單位數目，計算每單位估算淨值。",
+  "先核對基金配對與辨識數字，再一次更新多檔基金的「目前淨值」；不會將截圖上傳或匯入盈虧。",
+  "截圖推算值會標示來源，不冒充有正式報價日期的當日基金淨值。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -384,6 +384,7 @@ const BACKUP_REMINDER_KEY = "fundLedger_backupReminderDate";
 // 資料鍵（account 層級會自動加上 fundLedger_<帳號>_ 前綴）
 const STORAGE_KEY = "transactions";
 const NAV_KEY = "currentNav";
+const NAV_SOURCE_KEY = "currentNavSource";
 const FUND_NAMES_KEY = "fundNames";
 const PRICE_HISTORY_KEY = "priceHistory";
 const TRACKING_KEY = "tracking";
@@ -689,7 +690,7 @@ function diffDays(a, b) {
 }
 
 // 建立每檔基金的升序價格序列；navMap 較新時補一個「今日」價格點
-function buildPriceSeries(priceHistory, navMap, today) {
+function buildPriceSeries(priceHistory, navMap, today, navSourceMap = {}) {
   const series = {};
   const codes = new Set([...Object.keys(priceHistory || {}), ...Object.keys(navMap || {})]);
   for (const code of codes) {
@@ -699,7 +700,8 @@ function buildPriceSeries(priceHistory, navMap, today) {
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     // ★ navMap[code] 是 number（不是 {price} 物件），用 Number() 強制轉型
     const navNow = navMap ? Number(navMap[code]) : NaN;
-    if (Number.isFinite(navNow) && navNow > 0) {
+    // 截圖只有匯入日，沒有銀行估值日；不可虛構為今天的走勢點。
+    if (Number.isFinite(navNow) && navNow > 0 && navSourceMap[code]?.type !== "screenshot-estimate") {
       const last = arr[arr.length - 1];
       if (!last || last.date < today) arr.push({ date: today, price: navNow });
       else if (last.date === today) last.price = navNow;
@@ -709,13 +711,13 @@ function buildPriceSeries(priceHistory, navMap, today) {
   return series;
 }
 
-function computeDailyFloatingSeries(transactions, priceHistory, navMap, today) {
+function computeDailyFloatingSeries(transactions, priceHistory, navMap, today, navSourceMap) {
   const out = { byDate: {}, dates: [] };
   const txs = (transactions || []).filter((t) => t && t.date)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   if (txs.length === 0) return out;
 
-  const series = buildPriceSeries(priceHistory, navMap, today);
+  const series = buildPriceSeries(priceHistory, navMap, today, navSourceMap);
   const state = {};    // code -> { units, cost, ccy }
   const cursor = {};   // code -> series index（單調遞增）
   let ti = 0;
@@ -792,16 +794,13 @@ function fmtSigned(n, digits) {
 }
 
 // 各基金「當前浮動盈虧」排行榜資料（最新淨值 × 持倉 − 持倉成本）
-function computeFloatingGains(holdings, priceHistory, navMap, todayVal, fundNames) {
-  const series = buildPriceSeries(priceHistory, navMap, todayVal);
+function computeFloatingGains(holdings, priceHistory, navMap, todayVal, fundNames, navSourceMap) {
   const out = [];
   for (const code of Object.keys(holdings)) {
     const h = holdings[code];
     if (!h || h.units <= 0) continue;
-    const arr = series[code];
-    if (!arr || arr.length === 0) continue;
-    const last = arr[arr.length - 1]; // 已含今日 nav 補點，故為最新價
-    const price = last.price;
+    const price = latestKnownNav(code, priceHistory, navMap)?.price;
+    if (!Number.isFinite(price) || price <= 0) continue;
     const cost = h.cost || 0;
     const units = h.units;
     const mv = price * units;
@@ -971,7 +970,7 @@ function mdToHtml(src) {
   return s;
 }
 
-function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory, gainMode, s }) {
+function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory, navSourceMap, gainMode, s }) {
   const today = useMemo(() => {
     const d = new Date();
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -994,8 +993,8 @@ function CalendarGrid({ transactions, fundNames, holdings, navMap, priceHistory,
 
   // 預估收益：每日浮動盈虧序列
   const floating = useMemo(
-    () => (gainMode === "estimated" ? computeDailyFloatingSeries(transactions, priceHistory, navMap, today) : { byDate: {}, dates: [] }),
-    [gainMode, transactions, priceHistory, navMap, today]
+    () => (gainMode === "estimated" ? computeDailyFloatingSeries(transactions, priceHistory, navMap, today, navSourceMap) : { byDate: {}, dates: [] }),
+    [gainMode, transactions, priceHistory, navMap, navSourceMap, today]
   );
 
   const byDate = gainMode === "estimated" ? floating.byDate : realizedByDate;
@@ -1340,7 +1339,7 @@ function PreviewRow({ row, onChange, onRemove }) {
 // ---------------------------------------------------------------------------
 // Fund Card
 // ---------------------------------------------------------------------------
-function FundCard({ code, holding, nav, name, active, onToggleActive, onNavChange, priceHistory, onOpenPriceHistory, onOpenChart }) {
+function FundCard({ code, holding, nav, navSource, name, active, onToggleActive, onNavChange, priceHistory, onOpenPriceHistory, onOpenChart }) {
   const [calcOpen, setCalcOpen] = useState(false);
   const [sellPrice, setSellPrice] = useState("");
   const [sellUnits, setSellUnits] = useState("");
@@ -1388,6 +1387,9 @@ function FundCard({ code, holding, nav, name, active, onToggleActive, onNavChang
           onChange={(e) => onNavChange(e.target.value === "" ? "" : parseFloat(e.target.value))}
           style={s.navInput} />
       </div>
+      {navSource?.type === "screenshot-estimate" && <div style={{ fontSize: 10.5, color: "var(--warn)", textAlign: "right", marginTop: 3 }}>
+        截圖市值推算 · 非官方當日淨值
+      </div>}
       <div style={{...s.fundCardRow, marginTop: 2}} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", gap: 4 }}>
           <button type="button" style={s.cardActionBtn} onClick={() => onOpenPriceHistory(code)} title="價格紀錄">
@@ -2056,15 +2058,15 @@ function MarketValueModal({ holdings, navMap, fundNames, totalsByCcy, onClose })
   );
 }
 
-function FloatingGainModal({ holdings, priceHistory, navMap, fundNames, onClose }) {
+function FloatingGainModal({ holdings, priceHistory, navMap, fundNames, navSourceMap, onClose }) {
   const [sortDir, setSortDir] = useState("desc"); // desc = most gain first
   const unpricedCount = Object.keys(holdings).filter((code) =>
     holdings[code].units > 0 && !latestKnownNav(code, priceHistory, navMap)
   ).length;
   const gains = useMemo(() => {
-    const raw = computeFloatingGains(holdings, priceHistory, navMap, todayStr(), fundNames);
+    const raw = computeFloatingGains(holdings, priceHistory, navMap, todayStr(), fundNames, navSourceMap);
     return [...raw].sort((a, b) => sortDir === "desc" ? b.gain - a.gain : a.gain - b.gain);
-  }, [holdings, priceHistory, navMap, fundNames, sortDir]);
+  }, [holdings, priceHistory, navMap, fundNames, navSourceMap, sortDir]);
 
   const totalGain = useMemo(() => gains.reduce((s, g) => s + g.gain, 0), [gains]);
   const totalCost = useMemo(() => gains.reduce((s, g) => s + g.cost, 0), [gains]);
@@ -2210,6 +2212,209 @@ async function searchStockResults(term) {
   } catch (e) {
     return local;
   }
+}
+
+// 銀行「我的持倉」截圖：只讀基金名稱、市值、單位數目，不把盈虧誤當成淨值。
+function normalizePortfolioName(name) {
+  return String(name || "").normalize("NFKC").toLowerCase()
+    .replace(/[匯滙汇]/g, "汇").replace(/豐/g, "丰").replace(/國/g, "国")
+    .replace(/環/g, "环").replace(/經/g, "经").replace(/濟/g, "济")
+    .replace(/數/g, "数").replace(/單/g, "单").replace(/華/g, "华")
+    .replace(/證/g, "证").replace(/[\s·・（）()\-]/g, "");
+}
+function portfolioNumber(text) {
+  const match = String(text || "").match(/\d[\d,，.．]*/);
+  if (!match) return NaN;
+  let value = match[0].replace(/[，,]/g, "").replace(/．/g, ".");
+  // OCR 可能將千位逗號誤讀為點：1.308.648 → 1308.648。
+  const dots = value.match(/\./g) || [];
+  if (dots.length > 1) {
+    const last = value.lastIndexOf(".");
+    value = value.slice(0, last).replace(/\./g, "") + value.slice(last);
+  }
+  return Number(value);
+}
+function parsePortfolioNavText(text) {
+  const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const rows = [];
+  let row = null;
+  const flush = () => {
+    if (row && (row.marketValue !== "" || row.units !== "")) rows.push(row);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const compact = line.replace(/\s+/g, "");
+    // 銀行截圖每檔基金以名稱作標題；沒有基金標題的數字不猜測歸屬。
+    if (/基金/.test(compact) && !/我的持[倉仓]|認購|认购|贖回|赎回/.test(compact)) {
+      flush();
+      row = { name: compact.replace(/^[^\p{L}\p{N}]+/u, "").trim(), marketValue: "", units: "", currency: "" };
+      continue;
+    }
+    if (!row) continue;
+    const field = /市[值償偿]/.test(compact) ? "marketValue"
+      : /[單单]位[數数][目日]?/.test(compact) ? "units" : "";
+    if (!field) continue;
+    const afterLabel = compact.replace(/^.*?(?:市[值償偿]|[單单]位[數数][目日]?)/, "");
+    const value = portfolioNumber(afterLabel);
+    // OCR 有時把右欄數字放在下一行；只向前看一行，避免抓到盈虧。
+    const nextLine = i + 1 < lines.length ? lines[i + 1].replace(/\s+/g, "") : "";
+    const next = !Number.isFinite(value) && !/基金|市值|[單单]位[數数]|盈虧|盈亏|利潤|利润/.test(nextLine)
+      ? portfolioNumber(nextLine) : NaN;
+    const number = Number.isFinite(value) ? value : next;
+    if (Number.isFinite(number) && number > 0) row[field] = String(number);
+    if (field === "marketValue") {
+      const ccy = compact.match(/HKD|USD|CNY|RMB|EUR|GBP/i);
+      if (ccy) row.currency = ccy[0].toUpperCase().replace("RMB", "CNY");
+    }
+  }
+  flush();
+  return rows;
+}
+function matchPortfolioFund(name, fundCodes, fundNames) {
+  const normalized = normalizePortfolioName(name);
+  if (!normalized) return "";
+  const matches = fundCodes.filter((code) => {
+    // 帳本自訂名稱優先；不可用公開基金檔案覆蓋使用者實際記錄的名稱。
+    const names = fundNames[code] ? [fundNames[code]] : [FUND_RESEARCH_PROFILES[code]?.title].filter(Boolean);
+    return names.some((candidate) => normalizePortfolioName(candidate) === normalized);
+  });
+  return matches.length === 1 ? matches[0] : "";
+}
+function PortfolioNavOcrModal({ holdings, fundCodes, fundNames, navMap, onApply, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [error, setError] = useState("");
+  const [rawText, setRawText] = useState("");
+  const fileRef = useRef(null);
+  async function handleFiles(event) {
+    const files = [...(event.target.files || [])];
+    event.target.value = "";
+    if (!files.length) return;
+    setBusy(true); setError(""); setRows([]); setRawText("");
+    let worker = null;
+    try {
+      if (!window.Tesseract?.createWorker) throw new Error("OCR unavailable");
+      worker = await window.Tesseract.createWorker("chi_tra+chi_sim+eng", 1);
+      const parsed = [];
+      const raw = [];
+      for (let i = 0; i < files.length; i++) {
+        setProgress(`本機辨識 ${i + 1}/${files.length} 張…`);
+        const result = await worker.recognize(files[i]);
+        const recognized = result?.data?.text || "";
+        raw.push(recognized);
+        parsed.push(...parsePortfolioNavText(recognized));
+      }
+      setRawText(raw.join("\n\n"));
+      if (!parsed.length) {
+        setError("未找到「基金名稱／市值／單位數目」。請選清晰的「我的持倉」截圖，或改為手動輸入淨值。");
+      } else {
+        setRows(parsed.map((row, i) => {
+          const code = matchPortfolioFund(row.name, fundCodes, fundNames);
+          const units = Number(row.units), price = Number(row.marketValue) / units;
+          const ledgerUnits = Number(holdings[code]?.units);
+          const oldNav = Number(navMap[code]);
+          const unitsDiffer = ledgerUnits > 0 && units > 0 && Math.abs(ledgerUnits - units) / units > 0.01;
+          const currencyDiffer = code && row.currency && row.currency !== (holdings[code]?.currency || DEFAULT_CCY);
+          const priceDiffers = oldNav > 0 && Number.isFinite(price) &&
+            (price / oldNav > 1.5 || price / oldNav < 0.5);
+          return { ...row, id: i, code,
+            selected: Boolean(code && Number.isFinite(price) && price > 0 && !unitsDiffer && !currencyDiffer && !priceDiffers) };
+        }));
+      }
+    } catch (e) {
+      setError("本機辨識失敗。首次使用須能下載 OCR 語言模型；請檢查網絡後重試，或手動填入淨值。");
+    } finally {
+      if (worker) await worker.terminate().catch(() => {});
+      setBusy(false); setProgress("");
+    }
+  }
+  const update = (id, field, value) =>
+    setRows((prev) => prev.map((row) => row.id === id ? { ...row, [field]: value } : row));
+  const valid = rows.filter((row) => row.selected && row.code &&
+    Number(row.marketValue) > 0 && Number(row.units) > 0 &&
+    (!row.currency || row.currency === (holdings[row.code]?.currency || DEFAULT_CCY)) &&
+    Number.isFinite(Number(row.marketValue) / Number(row.units)));
+  const duplicateCodes = new Set(valid.filter((row, index) =>
+    valid.findIndex((other) => other.code === row.code) !== index).map((row) => row.code));
+  return (
+    <div style={s.modalBackdrop} onClick={onClose}>
+      <div style={{ ...s.modal, maxWidth: 660, maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={s.modalHeader}>
+          <h2 style={s.modalTitle}>從持倉截圖更新淨值</h2>
+          <button type="button" style={s.closeBtn} onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 12, lineHeight: 1.7, color: "var(--text-3)" }}>
+          選銀行 App「我的持倉」截圖，可一次選多張。在這部裝置辨識，圖片不會上傳；每單位估算價＝截圖市值 ÷ 截圖單位數。截圖沒有正式淨值日期，結果不是即時報價，請先核對數字與基金。
+        </p>
+        <p style={{ fontSize: 11, lineHeight: 1.6, color: "var(--warn)" }}>
+          無法配對、幣別不一致、單位數與帳本相差逾 1%，或估算價與原有淨值相差逾 50% 的項目，預設不勾選；幣別不一致的項目不會套用。
+        </p>
+        <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
+        <button type="button" style={s.parseBtn} disabled={busy} onClick={() => fileRef.current?.click()}>
+          <ImageIcon size={15} /> {busy ? progress || "辨識中…" : "選擇持倉截圖"}
+        </button>
+        {error && <p style={{ color: "var(--neg)", fontSize: 12 }}>{error}</p>}
+        {rawText && <details style={{ marginTop: 10, fontSize: 11, color: "var(--text-3)" }}>
+          <summary>查看 OCR 辨識文字（只在本機暫時顯示）</summary>
+          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 180, overflowY: "auto" }}>{rawText}</pre>
+        </details>}
+        {rows.map((row) => {
+          const marketValue = Number(row.marketValue), units = Number(row.units);
+          const price = marketValue > 0 && units > 0 ? marketValue / units : NaN;
+          const ledgerUnits = Number(holdings[row.code]?.units);
+          const unitsDiffer = row.code && Number.isFinite(ledgerUnits) && ledgerUnits > 0 &&
+            Number.isFinite(units) && units > 0 && Math.abs(ledgerUnits - units) / units > 0.01;
+          const currencyDiffer = row.code && row.currency && row.currency !== (holdings[row.code]?.currency || DEFAULT_CCY);
+          const oldNav = Number(navMap[row.code]);
+          const priceDiffers = oldNav > 0 && Number.isFinite(price) &&
+            (price / oldNav > 1.5 || price / oldNav < 0.5);
+          return <div key={row.id} style={{ ...s.parseBox, marginTop: 12, padding: 12 }}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: "var(--text)" }}>
+              <input type="checkbox" checked={row.selected} onChange={(e) => update(row.id, "selected", e.target.checked)} />
+              <strong>{row.name}</strong>
+            </label>
+            <select value={row.code} onChange={(e) => update(row.id, "code", e.target.value)}
+              style={{ ...s.previewInput, width: "100%", marginTop: 8 }}>
+              <option value="">請選擇帳本中的對應基金</option>
+              {fundCodes.map((code) => <option key={code} value={code}>{fundNames[code] || FUND_RESEARCH_PROFILES[code]?.title || code} · {code}</option>)}
+            </select>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <label style={{ flex: 1, fontSize: 11, color: "var(--text-3)" }}>截圖市值
+                <input style={{ ...s.previewInput, width: "100%" }} type="number" min="0" step="any"
+                  inputMode="decimal" value={row.marketValue} onChange={(e) => update(row.id, "marketValue", e.target.value)} />
+              </label>
+              <label style={{ flex: 1, fontSize: 11, color: "var(--text-3)" }}>截圖單位數
+                <input style={{ ...s.previewInput, width: "100%" }} type="number" min="0" step="any"
+                  inputMode="decimal" value={row.units} onChange={(e) => update(row.id, "units", e.target.value)} />
+              </label>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 8 }}>
+              估算每單位：{Number.isFinite(price) ? price.toFixed(4) : "—"} {row.currency}
+              {row.code && navMap[row.code] ? ` · 原有 ${Number(navMap[row.code]).toFixed(4)}` : ""}
+            </div>
+            {unitsDiffer && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 5 }}>
+              截圖單位數與帳本持倉相差逾 1%；請確認基金配對與截圖是否屬於同一帳戶。
+            </div>}
+            {currencyDiffer && <div style={{ fontSize: 11, color: "var(--neg)", marginTop: 5 }}>
+              截圖為 {row.currency}，帳本為 {holdings[row.code]?.currency || DEFAULT_CCY}；幣別不同，不能套用。
+            </div>}
+            {priceDiffers && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 5 }}>
+              估算價與原有淨值相差逾 50%；請先核對 OCR 數字及基金。
+            </div>}
+          </div>;
+        })}
+        {duplicateCodes.size > 0 && <p style={{ fontSize: 12, color: "var(--neg)" }}>有重複配對的基金，請取消重複列或重新配對。</p>}
+        <div style={s.modalFooter}>
+          <button type="button" style={s.cancelBtn} onClick={onClose}>取消</button>
+          <button type="button" style={s.saveBtn} disabled={busy || valid.length === 0 || duplicateCodes.size > 0}
+            onClick={() => onApply(valid.map((row) => ({ code: row.code, price: Number((Number(row.marketValue) / Number(row.units)).toFixed(4)) })))}>
+            更新 {valid.length} 檔淨值
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function HoldingsOcrModal({ fundName, onApply, onClose }) {
@@ -2661,7 +2866,7 @@ function CashFlowChart({ rows, ccy }) {
   </div>;
 }
 
-function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
+function LedgerTables({ transactions, holdings, fundNames, navMap, navSourceMap, priceHistory,
   effectiveNavMap, estimatedNavMap, trackingMap, onTracking, quoteState, quoteAt, onRefresh, canRefresh }) {
   const { holdingsByCcy, housesByCcy, monthsByCcy } = useMemo(() => {
     const holdingsByCcy = {}, houseMap = {}, monthMap = {};
@@ -2676,6 +2881,7 @@ function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
       const known = latestKnownNav(code, priceHistory, navMap);
       const source = valuation.missing ? "缺淨值"
         : Number.isFinite(estimated) && estimated > 0 ? "追蹤估算"
+        : Number.isFinite(manual) && manual > 0 && navSourceMap[code]?.type === "screenshot-estimate" ? "截圖市值推算"
         : Number.isFinite(manual) && manual > 0 ? "手填淨值"
         : known && known.date ? `價格紀錄 ${known.date}` : "價格紀錄";
       const row = {
@@ -2725,7 +2931,7 @@ function LedgerTables({ transactions, holdings, fundNames, navMap, priceHistory,
     }
     for (const rows of Object.values(monthsByCcy)) rows.sort((a, b) => b.month.localeCompare(a.month));
     return { holdingsByCcy, housesByCcy, monthsByCcy };
-  }, [transactions, holdings, fundNames, navMap, priceHistory, effectiveNavMap, estimatedNavMap, trackingMap]);
+  }, [transactions, holdings, fundNames, navMap, navSourceMap, priceHistory, effectiveNavMap, estimatedNavMap, trackingMap]);
 
   const chartCurrencies = [...new Set([...Object.keys(holdingsByCcy), ...Object.keys(monthsByCcy)])].sort();
   const blockStyle = { ...s.ledgerSection, padding: 16, marginBottom: 16 };
@@ -3075,6 +3281,7 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
 function FundLedger() {
   const [transactions, setTransactions] = useState([]);
   const [navMap, setNavMap] = useState({});
+  const [navSourceMap, setNavSourceMap] = useState({});
   const [fundNames, setFundNames] = useState({});
   const [priceHistory, setPriceHistory] = useState({});
   const [trackingMap, setTrackingMap] = useState({});
@@ -3151,6 +3358,7 @@ function FundLedger() {
   const [showRealizedModal, setShowRealizedModal] = useState(false);
   const [showFloatingModal, setShowFloatingModal] = useState(false);
   const [showMvModal, setShowMvModal] = useState(false);  // 預估市值明細彈窗
+  const [portfolioNavOcrOpen, setPortfolioNavOcrOpen] = useState(false);
   const [trackFund, setTrackFund] = useState(null);   // 正在設定追蹤的基金代碼
   const [quotes, setQuotes] = useState({});           // 行情快照
   const [quoteState, setQuoteState] = useState("idle"); // idle | loading | ok | error
@@ -3300,6 +3508,7 @@ function FundLedger() {
 
         const tRes = await storage.get(STORAGE_KEY);
         const nRes = await storage.get(NAV_KEY);
+        const nsRes = await storage.get(NAV_SOURCE_KEY);
         const fnRes = await storage.get(FUND_NAMES_KEY);
         const phRes = await storage.get(PRICE_HISTORY_KEY);
         const tkRes = await storage.get(TRACKING_KEY);
@@ -3319,6 +3528,7 @@ function FundLedger() {
           } catch (e) {}
           setTransactions(seed.transactions);
           setNavMap(seed.navMap);
+          setNavSourceMap({});
           setFundNames(seed.fundNames);
           setPriceHistory(seed.priceHistory);
           setTrackingMap(tkRes && tkRes.value ? JSON.parse(tkRes.value) : {});
@@ -3330,6 +3540,7 @@ function FundLedger() {
 
         if (tRes && tRes.value) setTransactions(txs);
         if (nRes && nRes.value) setNavMap(JSON.parse(nRes.value));
+        setNavSourceMap(nsRes && nsRes.value ? JSON.parse(nsRes.value) : {});
         if (fnRes && fnRes.value) setFundNames(JSON.parse(fnRes.value));
         let ph = phRes && phRes.value ? JSON.parse(phRes.value) : {};
         // 將交易中的價格/日期回填進價格紀錄（不覆蓋手動輸入的同一天紀錄）
@@ -3387,6 +3598,11 @@ function FundLedger() {
   const persistNav = useCallback(async (map) => {
     setNavMap(map);
     try { await storage.set(NAV_KEY, JSON.stringify(map)); } catch (e) { setError("儲存淨值失敗，請稍後再試。"); }
+  }, []);
+
+  const persistNavSource = useCallback(async (map) => {
+    setNavSourceMap(map);
+    try { await storage.set(NAV_SOURCE_KEY, JSON.stringify(map)); } catch (e) { setError("儲存淨值來源失敗，請稍後再試。"); }
   }, []);
 
   const persistFundNames = useCallback(async (map) => {
@@ -3643,6 +3859,11 @@ function FundLedger() {
     const nextNav = { ...navMap };
     if (val === "") delete nextNav[code]; else nextNav[code] = val;
     persistNav(nextNav);
+    if (navSourceMap[code]) {
+      const nextSources = { ...navSourceMap };
+      delete nextSources[code];
+      persistNavSource(nextSources);
+    }
     if (val !== "") {
       setPriceHistory((prev) => {
         const hist = prev[code] ? [...prev[code]] : [];
@@ -3656,6 +3877,18 @@ function FundLedger() {
         return merged;
       });
     }
+  }
+
+  function applyPortfolioNav(rows) {
+    const nextNav = { ...navMap };
+    const nextSources = { ...navSourceMap };
+    rows.forEach(({ code, price }) => {
+      nextNav[code] = price;
+      nextSources[code] = { type: "screenshot-estimate", importedAt: new Date().toISOString() };
+    });
+    persistNav(nextNav);
+    persistNavSource(nextSources);
+    setPortfolioNavOcrOpen(false);
   }
 
   function addPricePoint(code, date, price) {
@@ -3707,7 +3940,7 @@ function FundLedger() {
   }
 
   function exportBackup() {
-    const payload = { exportedAt: new Date().toISOString(), version: 5, transactions, navMap, fundNames, priceHistory, trackingMap, allocationPlan };
+    const payload = { exportedAt: new Date().toISOString(), version: 6, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
@@ -3767,7 +4000,7 @@ function FundLedger() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data.transactions)) throw new Error("格式不正確");
-        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
+        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, navSourceMap: data.navSourceMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
       } catch (err) {
         setError("這個備份檔案無法讀取，請確認是先前從此頁面下載的 JSON 備份。");
       }
@@ -3865,6 +4098,7 @@ function FundLedger() {
           kind: "backup",
           transactions: tx,
           navMap: data.navMap || {},
+          navSourceMap: data.navSourceMap || {},
           fundNames: data.fundNames || {},
           priceHistory: data.priceHistory || {},
           trackingMap: data.trackingMap || null,
@@ -3901,6 +4135,7 @@ function FundLedger() {
     if (mode === "replace") {
       persistTransactions(importPending.transactions);
       persistNav(importPending.navMap);
+      persistNavSource(importPending.navSourceMap || {});
       persistFundNames(importPending.fundNames);
       if (importPending.priceHistory) persistPriceHistory(importPending.priceHistory);
       if (importPending.trackingMap) persistTracking(importPending.trackingMap);
@@ -3910,6 +4145,11 @@ function FundLedger() {
       const merged = [...transactions, ...importPending.transactions.filter((t) => !existingIds.has(t.id))];
       persistTransactions(merged);
       persistNav({ ...navMap, ...importPending.navMap });
+      const mergedSources = { ...navSourceMap };
+      Object.keys(importPending.navMap || {}).forEach((code) => {
+        if (!importPending.navSourceMap?.[code]) delete mergedSources[code];
+      });
+      persistNavSource({ ...mergedSources, ...importPending.navSourceMap });
       persistFundNames({ ...fundNames, ...importPending.fundNames });
       if (importPending.priceHistory) persistPriceHistory({ ...priceHistory, ...importPending.priceHistory });
       if (importPending.trackingMap) persistTracking({ ...trackingMap, ...importPending.trackingMap });
@@ -4279,7 +4519,12 @@ function FundLedger() {
             </section>
           ))}
 
-        {fundCodes.length > 0 && <div style={s.sectionTitle}><span style={s.sectionBar} />持倉明細</div>}
+        {fundCodes.length > 0 && <div style={{ ...s.sectionTitle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span style={s.sectionBar} />持倉明細</span>
+          <button type="button" style={{ ...s.ghostBtn, fontSize: 11 }} onClick={() => setPortfolioNavOcrOpen(true)}>
+            <ImageIcon size={14} /> 截圖更新淨值
+          </button>
+        </div>}
         {/* House filter chips - above fund cards */}
         {allHouses.length > 1 && (
           <div style={{...s.chipRow, marginBottom: 8}}>
@@ -4311,7 +4556,7 @@ function FundLedger() {
           <section style={s.fundGrid}>
             {visibleFundCodes.map((code) => (
               <FundCard key={code} code={code} holding={holdings[code]}
-                nav={navMap[code]} name={fundNames[code] || ""}
+                nav={navMap[code]} navSource={navSourceMap[code]} name={fundNames[code] || ""}
                 priceHistory={priceHistory}
                 active={activeFund === code}
                 onToggleActive={() => setActiveFund(activeFund === code ? "__all__" : code)}
@@ -4465,7 +4710,7 @@ function FundLedger() {
               <button className="fl-chip" style={{...s.chip, ...(gainMode === "estimated" ? s.chipActive : {})}}
                 onClick={() => setGainMode("estimated")}>預估收益</button>
             </div>
-            <CalendarGrid transactions={transactions} fundNames={fundNames} holdings={holdings} navMap={navMap} priceHistory={priceHistory} gainMode={gainMode} s={s} />
+            <CalendarGrid transactions={transactions} fundNames={fundNames} holdings={holdings} navMap={navMap} priceHistory={priceHistory} navSourceMap={navSourceMap} gainMode={gainMode} s={s} />
           </>
         )}
         {activeTab === "tables" && (
@@ -4475,7 +4720,7 @@ function FundLedger() {
               onSetup={() => setAllocationSettingsOpen(true)}
               snoozedToday={allocationSnoozedDate === localTodayStr()} onSnooze={snoozeAllocationToday} />
             <LedgerTables transactions={transactions} holdings={holdings} fundNames={fundNames}
-              navMap={navMap} priceHistory={priceHistory} effectiveNavMap={effNavMap}
+              navMap={navMap} navSourceMap={navSourceMap} priceHistory={priceHistory} effectiveNavMap={effNavMap}
               estimatedNavMap={estNavByCode} trackingMap={trackingMap} onTracking={setTrackFund}
               quoteState={quoteState} quoteAt={quoteAt} onRefresh={() => fetchQuotes(quoteCodes)}
               canRefresh={quoteCodes.length > 0} />
@@ -4566,7 +4811,12 @@ function FundLedger() {
 
       {showFloatingModal && (
         <FloatingGainModal holdings={holdings} priceHistory={priceHistory} navMap={effNavMap}
-          fundNames={fundNames} onClose={() => setShowFloatingModal(false)} />
+          fundNames={fundNames} navSourceMap={navSourceMap} onClose={() => setShowFloatingModal(false)} />
+      )}
+
+      {portfolioNavOcrOpen && (
+        <PortfolioNavOcrModal holdings={holdings} fundCodes={fundCodes} fundNames={fundNames}
+          navMap={navMap} onApply={applyPortfolioNav} onClose={() => setPortfolioNavOcrOpen(false)} />
       )}
 
       {showMvModal && (
