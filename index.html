@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Micy致富計畫 — Fund Ledger</title>
+<title>Micy致富計畫 v2.0 — 港幣投資回報</title>
+<link rel="stylesheet" href="./investment.css">
+<script src="./investment-engine.js"></script>
 <link rel="icon" type="image/png" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
 <link rel="icon" type="image/svg+xml" href="./micy-icon.svg" data-github-icon="filled-svg">
 <link rel="apple-touch-icon" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
@@ -117,9 +119,11 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
 </head>
 <body>
 <div id="root"></div>
+<script type="text/babel" src="./investment-ui.jsx"></script>
 <script type="text/babel">
 
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const InvestmentPage = window.InvestmentPage;
 
 // ---------------------------------------------------------------------------
 // Icons — inline SVGs replacing lucide-react
@@ -329,12 +333,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.7.1";
-const APP_RELEASE_DATE = "2026-10-16";
+const APP_VERSION = "v2.0.0";
+const APP_RELEASE_DATE = "2026-10-17";
 const APP_CHANGES = [
-  "持倉截圖會自動配對帳本基金，支援簡繁體、恆／恒、匯／滙／汇、官方名稱與常見簡稱。",
-  "已配對的有效項目會自動勾選，可直接批次更新淨值；配錯時仍可改選基金或取消該列。",
-  "單位數或價格差異改為提示，不再要求逐檔勾選；幣別不符和重複配對仍會攔截。截圖只在本機辨識。",
+  "新增港幣回報頁：Trade25 美股、美元現金、實際換匯與港幣成本一起記錄。",
+  "FlexInvest 與 Trade25 分開記月費；逐月判斷、批次補記、待核實與已扣款分開。",
+  "完整 JSON 備份包含 v2.0 所有紀錄；保留 v1.7.1 原版及升級前的本機基金快照。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -383,6 +387,8 @@ const PASSWORD_VERIFIER_KEY = "fundLedger_Micy_passwordVerifier_v1";
 const BACKUP_REMINDER_KEY = "fundLedger_backupReminderDate";
 // 資料鍵（account 層級會自動加上 fundLedger_<帳號>_ 前綴）
 const STORAGE_KEY = "transactions";
+const INVESTMENT_KEY = "investmentLedgerV2";
+const PRE_V2_KEY = "preV2Backup";
 const NAV_KEY = "currentNav";
 const NAV_SOURCE_KEY = "currentNavSource";
 const FUND_NAMES_KEY = "fundNames";
@@ -3313,6 +3319,19 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
 // Main App
 // ---------------------------------------------------------------------------
 function FundLedger() {
+  const [investmentData, setInvestmentData] = useState(() => InvestmentLedger.blank());
+  const [investmentLoadError, setInvestmentLoadError] = useState("");
+  function persistInvestment(next) {
+    const normalized = InvestmentLedger.normalize(next);
+    localStorage.setItem(acctKey(INVESTMENT_KEY), JSON.stringify(normalized));
+    setInvestmentData(normalized);
+  }
+  function exportPreV2() {
+    const raw = localStorage.getItem(acctKey(PRE_V2_KEY));
+    if (!raw) { setError("此瀏覽器沒有升級前快照，請先下載完整備份。"); return; }
+    downloadFile(raw, `基金帳本-升級前v1.7.1-${account}.json`, "application/json");
+  }
+
   const [transactions, setTransactions] = useState([]);
   const [navMap, setNavMap] = useState({});
   const [navSourceMap, setNavSourceMap] = useState({});
@@ -3456,9 +3475,9 @@ function FundLedger() {
   const [page, setPage] = useState(1);
   const [activeMonth, setActiveMonth] = useState("__all__");
   const [theme, setTheme] = useState(lsGet("fundLedger_theme", "dark"));
-  const TAB_KEY = "fundLedger_activeTab";
+  const TAB_KEY = "fundLedger_activeTab_v2";
   const [activeTab, setActiveTab] = useState(() => {
-    const saved = lsGet(TAB_KEY, "overview");
+    const saved = lsGet(TAB_KEY, "investment");
     return saved === "advice" ? "tables" : saved;
   });
   useEffect(() => { lsSet(TAB_KEY, activeTab); }, [activeTab]);
@@ -3550,6 +3569,23 @@ function FundLedger() {
         setAllocationPlan(normalizeAllocationPlan(apRes && apRes.value ? JSON.parse(apRes.value) : null));
         setAllocationSnoozedDate(lsGet(acctKey(ALLOCATION_SNOOZE_KEY), ""));
         const txs = tRes && tRes.value ? JSON.parse(tRes.value) : [];
+        setInvestmentLoadError("");
+        try {
+          if (!localStorage.getItem(acctKey(PRE_V2_KEY))) {
+            const read = (r, fallback) => r && r.value ? JSON.parse(r.value) : fallback;
+            localStorage.setItem(acctKey(PRE_V2_KEY), JSON.stringify({
+              exportedAt: new Date().toISOString(), version: 6, transactions: txs,
+              navMap: read(nRes, {}), navSourceMap: read(nsRes, {}), fundNames: read(fnRes, {}),
+              priceHistory: read(phRes, {}), trackingMap: read(tkRes, {}), allocationPlan: read(apRes, null)
+            }));
+          }
+          const savedV2 = localStorage.getItem(acctKey(INVESTMENT_KEY));
+          setInvestmentData(InvestmentLedger.normalize(savedV2 ? JSON.parse(savedV2) : null));
+        } catch (v2Error) {
+          setInvestmentData(InvestmentLedger.blank());
+          setInvestmentLoadError("v2.0 資料未能安全載入或保留快照，已停止新紀錄寫入：" + v2Error.message);
+        }
+
 
         // Demo 帳號：若尚無資料，以假資料初始化供朋友預覽
         if (account === "Demo" && txs.length === 0) {
@@ -3572,10 +3608,10 @@ function FundLedger() {
           return;
         }
 
-        if (tRes && tRes.value) setTransactions(txs);
-        if (nRes && nRes.value) setNavMap(JSON.parse(nRes.value));
+        setTransactions(txs);
+        setNavMap(nRes && nRes.value ? JSON.parse(nRes.value) : {});
         setNavSourceMap(nsRes && nsRes.value ? JSON.parse(nsRes.value) : {});
-        if (fnRes && fnRes.value) setFundNames(JSON.parse(fnRes.value));
+        setFundNames(fnRes && fnRes.value ? JSON.parse(fnRes.value) : {});
         let ph = phRes && phRes.value ? JSON.parse(phRes.value) : {};
         // 將交易中的價格/日期回填進價格紀錄（不覆蓋手動輸入的同一天紀錄）
         for (const t of txs) {
@@ -3974,7 +4010,12 @@ function FundLedger() {
   }
 
   function exportBackup() {
-    const payload = { exportedAt: new Date().toISOString(), version: 6, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
+    if (investmentLoadError) {
+      const raw = Object.fromEntries([STORAGE_KEY,NAV_KEY,NAV_SOURCE_KEY,FUND_NAMES_KEY,PRICE_HISTORY_KEY,TRACKING_KEY,ALLOCATION_PLAN_KEY,INVESTMENT_KEY,PRE_V2_KEY].map(key => [key,localStorage.getItem(acctKey(key))]));
+      downloadFile(JSON.stringify({recoveryOnly:true,account,raw},null,2), `基金帳本-原始資料救援-${todayStr()}.json`, "application/json");
+      setError("已下載原始資料救援檔；此檔保留損壞資料供修復，不能當一般備份匯入。"); return;
+    }
+    const payload = { exportedAt: new Date().toISOString(), version: 7, appVersion: APP_VERSION, investmentLedger: investmentData, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
@@ -4034,7 +4075,7 @@ function FundLedger() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data.transactions)) throw new Error("格式不正確");
-        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, navSourceMap: data.navSourceMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
+        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, navSourceMap: data.navSourceMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, investmentLedger: data.investmentLedger ? InvestmentLedger.normalize(data.investmentLedger) : null, allocationPlan: data.allocationPlan || null, fileName: file.name });
       } catch (err) {
         setError("這個備份檔案無法讀取，請確認是先前從此頁面下載的 JSON 備份。");
       }
@@ -4137,6 +4178,7 @@ function FundLedger() {
           priceHistory: data.priceHistory || {},
           trackingMap: data.trackingMap || null,
           allocationPlan: data.allocationPlan || null,
+          investmentLedger: data.investmentLedger ? InvestmentLedger.normalize(data.investmentLedger) : null,
           fileName: "貼上的備份文本",
         });
         setPasteImportOpen(false);
@@ -4166,61 +4208,42 @@ function FundLedger() {
 
   function confirmImport(mode) {
     if (!importPending) return;
-    if (mode === "replace") {
-      persistTransactions(importPending.transactions);
-      persistNav(importPending.navMap);
-      persistNavSource(importPending.navSourceMap || {});
-      persistFundNames(importPending.fundNames);
-      if (importPending.priceHistory) persistPriceHistory(importPending.priceHistory);
-      if (importPending.trackingMap) persistTracking(importPending.trackingMap);
-      persistAllocationPlan(importPending.allocationPlan || defaultAllocationPlan());
-    } else {
-      const existingIds = new Set(transactions.map((t) => t.id));
-      const merged = [...transactions, ...importPending.transactions.filter((t) => !existingIds.has(t.id))];
-      persistTransactions(merged);
-      persistNav({ ...navMap, ...importPending.navMap });
-      const mergedSources = { ...navSourceMap };
-      Object.keys(importPending.navMap || {}).forEach((code) => {
-        if (!importPending.navSourceMap?.[code]) delete mergedSources[code];
-      });
-      persistNavSource({ ...mergedSources, ...importPending.navSourceMap });
-      persistFundNames({ ...fundNames, ...importPending.fundNames });
-      if (importPending.priceHistory) persistPriceHistory({ ...priceHistory, ...importPending.priceHistory });
-      if (importPending.trackingMap) persistTracking({ ...trackingMap, ...importPending.trackingMap });
-      if (importPending.allocationPlan) {
-        const incoming = normalizeAllocationPlan(importPending.allocationPlan);
-        persistAllocationPlan({
-          targets: incoming.targets,
-          fundCategories: { ...allocationPlan.fundCategories, ...incoming.fundCategories },
-          recoveryNav: { ...allocationPlan.recoveryNav, ...incoming.recoveryNav },
-          fxToHKD: { ...allocationPlan.fxToHKD, ...incoming.fxToHKD },
-        });
+    try {
+      const replace = mode === "replace", incoming = importPending;
+      const existingIds = new Set(transactions.map(t => t.id));
+      const nextTransactions = replace ? incoming.transactions : [...transactions, ...incoming.transactions.filter(t => !existingIds.has(t.id))];
+      const nextNav = replace ? incoming.navMap : { ...navMap, ...incoming.navMap };
+      const sources = replace ? {} : { ...navSourceMap };
+      Object.keys(incoming.navMap || {}).forEach(code => { if (!incoming.navSourceMap?.[code]) delete sources[code]; });
+      const nextSources = { ...sources, ...incoming.navSourceMap };
+      const nextNames = replace ? incoming.fundNames : { ...fundNames, ...incoming.fundNames };
+      const nextHistory = replace ? { ...(incoming.priceHistory || {}) } : { ...priceHistory, ...incoming.priceHistory };
+      const nextTracking = replace ? incoming.trackingMap || {} : { ...trackingMap, ...incoming.trackingMap };
+      let nextPlan = replace ? normalizeAllocationPlan(incoming.allocationPlan) : allocationPlan;
+      if (!replace && incoming.allocationPlan) {
+        const plan = normalizeAllocationPlan(incoming.allocationPlan);
+        nextPlan = { targets: plan.targets, fundCategories: {...allocationPlan.fundCategories,...plan.fundCategories}, recoveryNav: {...allocationPlan.recoveryNav,...plan.recoveryNav}, fxToHKD: {...allocationPlan.fxToHKD,...plan.fxToHKD} };
       }
-    }
-    // CSV 沒有獨立價格歷史，但成交價可同步進淨值走勢圖（與「貼上交易」一致）
-    if (importPending.kind === "csv") {
-      const additions = {};
-      importPending.transactions.forEach((t) => {
-        if (t.nav && t.fundCode && t.date) {
-          (additions[t.fundCode] = additions[t.fundCode] || []).push({ date: t.date, price: t.nav });
+      if (incoming.kind === "csv") {
+        for (const t of incoming.transactions) {
+          if (!t.nav || !t.fundCode || !t.date) continue;
+          const hist = [...(nextHistory[t.fundCode] || [])];
+          const index = hist.findIndex(p => p.date === t.date), point = {date:t.date,price:t.nav};
+          if (index >= 0) hist[index] = point; else hist.push(point);
+          hist.sort((a,b) => a.date.localeCompare(b.date)); nextHistory[t.fundCode] = hist;
         }
-      });
-      setPriceHistory((prev) => {
-        const next = mode === "replace" ? {} : { ...prev };
-        Object.entries(additions).forEach(([code, recs]) => {
-          const hist = next[code] ? [...next[code]] : [];
-          recs.forEach((rec) => {
-            const i = hist.findIndex((x) => x.date === rec.date);
-            if (i >= 0) hist[i] = rec; else hist.push(rec);
-          });
-          hist.sort((a, b) => (a.date < b.date ? -1 : 1));
-          next[code] = hist;
-        });
-        try { storage.set(PRICE_HISTORY_KEY, JSON.stringify(next)); } catch (e) {}
-        return next;
-      });
-    }
-    setImportPending(null);
+      }
+      const nextV2 = incoming.investmentLedger ? (replace ? InvestmentLedger.normalize(incoming.investmentLedger) : InvestmentLedger.merge(investmentData,incoming.investmentLedger)) : investmentData;
+      const checked = InvestmentLedger.calculate(nextV2, [], {}, localTodayStr());
+      if (checked.issues.length) throw Error(checked.issues[0].message);
+      const values = { [STORAGE_KEY]:nextTransactions, [NAV_KEY]:nextNav, [NAV_SOURCE_KEY]:nextSources, [FUND_NAMES_KEY]:nextNames, [PRICE_HISTORY_KEY]:nextHistory, [TRACKING_KEY]:nextTracking, [ALLOCATION_PLAN_KEY]:nextPlan };
+      if (incoming.investmentLedger) values[INVESTMENT_KEY] = nextV2;
+      InvestmentLedger.atomicWrite(localStorage, Object.fromEntries(Object.entries(values).map(([key,value]) => [acctKey(key),JSON.stringify(value)])));
+      setTransactions(nextTransactions); setNavMap(nextNav); setNavSourceMap(nextSources); setFundNames(nextNames);
+      setPriceHistory(nextHistory); setTrackingMap(nextTracking); setAllocationPlan(nextPlan); setInvestmentData(nextV2);
+      if (incoming.investmentLedger) setInvestmentLoadError("");
+      setImportPending(null); setError("");
+    } catch (err) { setError("未匯入：" + err.message); }
   }
 
   function runParse(initialText) {
@@ -4417,7 +4440,7 @@ function FundLedger() {
             <img src={APP_ICON_SRC} alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} />
             <div>
               <h1 style={s.h1}>Micy致富計畫</h1>
-              <p style={s.subtitle}>FUND LEDGER · {APP_CHANNEL} · {APP_VERSION} · 貼上通知即自動記帳</p>
+              <p style={s.subtitle}>INVESTMENT LEDGER · {APP_CHANNEL} · {APP_VERSION}</p>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -4474,8 +4497,15 @@ function FundLedger() {
 
         {error && <div style={s.errorBanner}>{error}</div>}
 
+        {activeTab === "investment" && <InvestmentPage key={account} data={investmentData} onChange={persistInvestment}
+          legacy={transactions} nav={effNavMap} fundNames={fundNames} loadError={investmentLoadError}
+          onBackup={exportBackup} onImport={triggerImport} onLegacy={() => setActiveTab("overview")} onOldBackup={exportPreV2} />}
         {activeTab === "overview" && (
           <>
+          <div style={{ ...s.parseBox, marginBottom: 16 }}>
+            <strong>基金原幣紀錄</strong> · Trade25、美股、換匯及平台月費已移至「港幣回報」。
+            <button style={{...s.ghostBtn, marginLeft: 12}} onClick={() => setActiveTab("investment")}>查看扣費後港幣回報</button>
+          </div>
         {pasteOpen && (
           <section style={s.parseBox} className="fl-fade">
             <div style={s.parseHeader}>
@@ -4766,8 +4796,11 @@ function FundLedger() {
       {/* 底部 Tab 導航 */}
       <nav style={s.tabBar}>
         <div style={{ display: "flex", width: "100%", maxWidth: 920, padding: "0 8px", minWidth: 0 }}>
+        <button className={"fl-tab" + (activeTab === "investment" ? " active" : "")} onClick={() => setActiveTab("investment")}>
+          <Wallet size={20} /> <span>港幣回報</span>
+        </button>
         <button className={"fl-tab" + (activeTab === "overview" ? " active" : "")} onClick={() => setActiveTab("overview")}>
-          <Wallet size={20} /> <span>資產總覽</span>
+          <Wallet size={20} /> <span>基金紀錄</span>
         </button>
         <button className={"fl-tab" + (activeTab === "calendar" ? " active" : "")} onClick={() => setActiveTab("calendar")}>
           <Calendar size={20} /> <span>收益日曆</span>
@@ -4800,6 +4833,7 @@ function FundLedger() {
                 ? <>CSV 檔「{importPending.fileName}」可匯入 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？</>
                 : <>備份檔「{importPending.fileName}」內含 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？{importPending.allocationPlan && <>備份內的配置目標、分類及觀察價也會一併還原。</>}</>}
             </p>
+            <p style={{fontSize: 12, color: "var(--text-3)"}}>{importPending.investmentLedger ? `另含 ${importPending.investmentLedger.events.length} 筆美股／現金／費用紀錄。合併時同一識別碼及同平台月份保留目前版本；取代會替換 v2.0 資料。` : "這是舊版／CSV 資料，只匯入基金部分；目前的 v2.0 美股、換匯及費用會保留。"}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
               <button type="button" style={{...s.saveBtn, width: "100%"}} className="fl-btn" onClick={() => confirmImport("merge")}>
                 合併（保留目前資料，加入備份中沒有的紀錄）
