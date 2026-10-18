@@ -60,7 +60,7 @@ jobs:
       - name: Prepare static Pages artifact
         run: |
           mkdir -p public-site
-          cp index.html investment-engine.js investment-ui.jsx investment.css micy-icon.png micy-icon.svg .nojekyll research.json analysis.json public-site/
+          cp index.html unified-ledger.js investment-engine.js investment-ui.jsx investment.css micy-icon.png micy-icon.svg .nojekyll research.json analysis.json public-site/
           cp -R versions public-site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

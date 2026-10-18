@@ -6,14 +6,22 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const EPS = 1e-7;
-  const ACCOUNTS = { trade25: 'Trade25', flexinvest: 'FlexInvest' };
+  const ACCOUNTS = { hangseng: '恆生', trade25: '匯豐 Trade25', flexinvest: '匯豐 FlexInvest' };
   const TYPES = ['buy', 'sell', 'dividend', 'exchange', 'deposit', 'withdraw', 'fee'];
-  const EVENT_FIELDS = ['id','type','account','date','currency','settlement','amount','fee','units','symbol','name','price','hkd','usd','direction','feeHKD','feeParts','seq','category','month','status','note'];
+  const EVENT_FIELDS = ['id','type','account','date','currency','settlement','amount','fee','units','symbol','name','price','hkd','usd','direction','feeHKD','feeParts','seq','category','month','status','note','refNo'];
   const blank = () => ({ schemaVersion: 2, events: [], legacyHKD: {}, quotes: {}, fx: {}, flexMonthly: {} });
   const number = v => v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));
   const positive = v => number(v) && Number(v) > 0;
   function dateOK(v) { return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v)) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v; }
   const monthOK = v => typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+  // Records created before platforms were introduced belong to the user's FlexInvest account.
+  const platformForTransaction = t => Object.hasOwn(ACCOUNTS, t?.platformId) ? t.platformId : Object.hasOwn(ACCOUNTS, t?.account) ? t.account : 'flexinvest';
+  const instrumentKey = (account, symbol, currency = 'HKD') => `${account}:${String(symbol).trim()}:${currency}`;
+  function legacyEvent(t, d, seq) {
+    return { ...t, account: platformForTransaction(t), currency: t.currency || 'HKD', symbol: String(t.fundCode || t.symbol || '').trim(), name: t.fundName || t.name,
+      settlement: t.settlement || 'external', hkd: positive(t.hkdAmount) ? Number(t.hkdAmount) : positive(d.legacyHKD[t.id]) ? Number(d.legacyHKD[t.id]) : null,
+      seq: Number.isFinite(t.seq) ? t.seq : seq, legacySource: true };
+  }
   function validateEvent(e) {
     if (!e || typeof e !== 'object' || !e.id || typeof e.id !== 'string') throw Error('紀錄缺少識別碼');
     if (!Object.hasOwn(ACCOUNTS, e.account) || !TYPES.includes(e.type) || !dateOK(e.date)) throw Error('平台、交易類型或日期不正確');
@@ -101,34 +109,37 @@
     if (Number(avg) <= 200000) return { amount: 28, reason: '月平均 HK$10,000–200,000' };
     return { amount: null, reason: '超過 HK$200,000，按年率 0.8% 計；請依銀行帳單填實際金額' };
   }
-  function trade25Active(events, month) {
+  function trade25Active(events, month, legacy = []) {
     const end = month + '-31', units = new Map();
-    for (const e of [...events].sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0))) {
+    const legacyTrades = legacy.map(t => ({ ...t, account: platformForTransaction(t), symbol: t.fundCode || t.symbol, currency: t.currency || 'HKD' }));
+    for (const e of [...events, ...legacyTrades].sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0))) {
       if (e.account !== 'trade25' || !['buy', 'sell'].includes(e.type) || e.date > end) continue;
       if (e.date.slice(0, 7) === month) return true;
-      const key = `${e.symbol}:${e.currency}`;
+      const key = instrumentKey(e.account, e.symbol, e.currency);
       units.set(key, (units.get(key) || 0) + (e.type === 'buy' ? 1 : -1) * Number(e.units));
     }
     return [...units.values()].some(v => v > EPS);
   }
-  function feeSuggestions(data, from, to) {
+  function feeSuggestions(data, from, to, legacy = []) {
     const d = normalize(data), keys = new Set(d.events.map(feeKey).filter(Boolean));
     return months(from, to).flatMap(month => {
       const flex = flexFee(d.flexMonthly[month]);
+      const active = trade25Active(d.events, month, legacy);
       return [
-        { account: 'trade25', month, amount: trade25Active(d.events, month) ? 25 : null, reason: trade25Active(d.events, month) ? '當月曾交易或持股' : '未找到當月交易／持股；請核對是否漏記' },
+        { account: 'trade25', month, amount: active ? 25 : null, reason: active ? '當月曾交易或持股' : '未找到當月交易／持股；請核對是否漏記' },
         { account: 'flexinvest', month, ...flex },
       ].map(r => ({ ...r, exists: keys.has(`${r.account}:${r.month}`) }));
     });
   }
   function calculate(raw, legacy = [], nav = {}, asOf = new Date().toISOString().slice(0, 10)) {
     const d = normalize(raw), issues = [], missing = [], rows = [], holdings = new Map();
-    const accounts = Object.fromEntries(Object.keys(ACCOUNTS).map(k => [k, { id: k, deposits: 0, withdrawals: 0, feesHKD: 0, feeDetails: [], pendingHKD: 0, assets: 0, complete: true, cash: { HKD: { amount: 0, basis: 0 }, USD: { amount: 0, basis: 0 } }, nativeGain: {}, settledGain: 0 }]));
+    const accounts = Object.fromEntries(Object.keys(ACCOUNTS).map(k => [k, { id: k, label: ACCOUNTS[k], transactionCount: 0, deposits: 0, withdrawals: 0, feesHKD: 0, feeDetails: [], pendingHKD: 0, assets: 0, complete: true, cash: { HKD: { amount: 0, basis: 0 }, USD: { amount: 0, basis: 0 } }, nativeGain: {}, settledGain: 0 }]));
     const mark = (a, message) => { a.complete = false; missing.push(message); };
     const rate = c => c === 'HKD' ? 1 : (d.fx[c] && d.fx[c].date <= asOf ? Number(d.fx[c].rate) : null);
     const getHolding = (a, symbol, currency, legacySource = false) => {
-      const key = `${a.id}:${legacySource ? 'legacy:' : ''}${symbol}:${currency}`;
+      const key = instrumentKey(a.id, symbol, currency);
       if (!holdings.has(key)) holdings.set(key, { key, account: a.id, symbol, currency, units: 0, nativeCost: 0, basis: 0, basisKnown: true, legacy: legacySource });
+      if (legacySource) { holdings.get(key).legacy = true; holdings.get(key).legacySymbol = symbol; }
       return holdings.get(key);
     };
     function takeCash(a, ccy, amount) {
@@ -140,14 +151,21 @@
       return cost;
     }
     function addCash(a, ccy, amount, basis) { a.cash[ccy].amount += amount; a.cash[ccy].basis += basis; }
-    const ordered = d.events.map((e, i) => ({ ...e, seq: e.seq ?? i })).sort((a, b) => a.date.localeCompare(b.date) || a.seq - b.seq);
+    // Both stores remain intact; their records share one chronological accounting stream.
+    // Original records normally predate v2 records, so put them first when dates and sequence tie.
+    const ordered = [...legacy.map((t, i) => legacyEvent(t, d, i)), ...d.events.map((e, i) => ({ ...e, seq: e.seq ?? i }))]
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.seq - b.seq);
     for (const e of ordered) {
       const a = accounts[e.account];
+      if (e.legacySource && (!dateOK(e.date) || !number(e.amount) || Number(e.amount) < 0 || !number(e.fee || 0) || Number(e.fee || 0) < 0 || !['buy', 'sell', 'dividend'].includes(e.type) || !['external', 'wallet'].includes(e.settlement) || (['buy', 'sell'].includes(e.type) && (!e.symbol || !positive(e.units))))) {
+        mark(a, `舊交易 ${e.id} 格式待核對`); continue;
+      }
       if (e.type === 'fee' && e.status === 'pending') {
         const r = rate(e.currency); if (r) a.pendingHKD += Number(e.amount) * r;
         rows.push({ ...e, pending: true }); continue;
       }
       if (e.date > asOf) { rows.push({ ...e, future: true }); continue; }
+      a.transactionCount += 1;
       const amount = Number(e.amount), fee = Number(e.fee || 0), external = e.settlement === 'external';
       const row = { ...e };
       try {
@@ -171,14 +189,16 @@
           a.withdrawals += value; row.settledGain = value - cost; a.settledGain += row.settledGain;
         } else if (e.type === 'buy') {
           const total = amount + fee;
-          const cost = external ? (e.currency === 'HKD' ? total : Number(e.hkd)) : takeCash(a, e.currency, total);
-          if (external) a.deposits += cost;
-          const h = getHolding(a, e.symbol, e.currency);
-          h.units += Number(e.units); h.nativeCost += total; h.basis += cost;
-          a.feeDetails.push({currency: e.currency, amount: fee, hkd: external ? cost * fee / total : null});
+          const cost = external ? (e.currency === 'HKD' ? total : positive(e.hkd) ? Number(e.hkd) : null) : takeCash(a, e.currency, total);
+          if (external) a.deposits += cost || 0;
+          const h = getHolding(a, e.symbol, e.currency, e.legacySource);
+          if (e.name) h.name = e.name;
+          if (cost === null) { mark(a, `${e.date} ${e.symbol} 待補實際港幣收付`); h.basisKnown = false; }
+          h.units += Number(e.units); h.nativeCost += total; h.basis += cost || 0;
+          a.feeDetails.push({currency: e.currency, amount: fee, hkd: external && cost !== null && total > 0 ? cost * fee / total : null});
           row.hkdCost = cost;
         } else if (e.type === 'sell') {
-          const h = getHolding(a, e.symbol, e.currency);
+          const h = getHolding(a, e.symbol, e.currency, e.legacySource);
           if (Number(e.units) > h.units + EPS) throw Error('賣出股數超過當時持倉');
           const fraction = Number(e.units) / h.units, nativeCost = h.nativeCost * fraction, basis = h.basis * fraction;
           const net = amount - fee;
@@ -186,9 +206,11 @@
           row.nativeGain = net - nativeCost;
           a.nativeGain[e.currency] = (a.nativeGain[e.currency] || 0) + row.nativeGain;
           if (external) {
-            const hkd = e.currency === 'HKD' ? net : Number(e.hkd);
-            a.withdrawals += hkd; row.settledGain = hkd - basis; a.settledGain += row.settledGain;
-            a.feeDetails.push({currency: e.currency, amount: fee, hkd: hkd / net * fee});
+            const hkd = e.currency === 'HKD' ? net : positive(e.hkd) ? Number(e.hkd) : null;
+            if (hkd === null) mark(a, `${e.date} ${e.symbol} 待補實際港幣收付`);
+            a.withdrawals += hkd || 0; row.settledGain = hkd !== null && h.basisKnown ? hkd - basis : null;
+            if (row.settledGain !== null) a.settledGain += row.settledGain;
+            a.feeDetails.push({currency: e.currency, amount: fee, hkd: hkd !== null && net > 0 ? hkd / net * fee : null});
           } else {
             // USD carries unrecovered historical HKD principal, including prior investment outcomes.
             // This is cash-flow attribution, not tax basis or a pure FX-profit calculation.
@@ -196,10 +218,10 @@
             if (e.currency === 'HKD') { row.settledGain = net - basis; a.settledGain += row.settledGain; }
             a.feeDetails.push({currency: e.currency, amount: fee});
           }
-          row.hkdCost = basis;
+          row.hkdCost = h.basisKnown ? basis : null;
         } else if (e.type === 'dividend') {
           const net = amount - fee;
-          if (external) { const hkd = e.currency === 'HKD' ? net : Number(e.hkd); a.withdrawals += hkd; a.feeDetails.push({currency: e.currency, amount: fee, hkd: hkd / net * fee}); }
+          if (external) { const hkd = e.currency === 'HKD' ? net : positive(e.hkd) ? Number(e.hkd) : null; if (hkd === null) mark(a, `${e.date} ${e.symbol} 待補實際港幣收付`); a.withdrawals += hkd || 0; a.feeDetails.push({currency: e.currency, amount: fee, hkd: hkd !== null && net > 0 ? hkd / net * fee : null}); }
           else { addCash(a, e.currency, net, e.currency === 'HKD' ? net : 0); a.feeDetails.push({currency: e.currency, amount: fee}); }
           a.nativeGain[e.currency] = (a.nativeGain[e.currency] || 0) + net;
         } else if (e.type === 'fee') {
@@ -209,32 +231,22 @@
         rows.push(row);
       } catch (err) { a.complete = false; issues.push({ id: e.id, message: `${e.date} ${e.symbol || e.type}：${err.message}` }); rows.push({...row, error: err.message}); }
     }
-    // Legacy funds keep their original records and cost method. Only HKD overrides are additive.
-    for (const t of [...legacy].sort((a, b) => String(a.date).localeCompare(String(b.date)))) {
-      if (t.date > asOf) continue;
-      const a = accounts.flexinvest, ccy = t.currency || 'HKD', fee = Number(t.fee || 0), amount = Number(t.amount);
-      if (!Number.isFinite(amount) || amount < 0 || !['buy', 'sell', 'dividend'].includes(t.type)) { mark(a, `舊交易 ${t.id} 格式待核對`); continue; }
-      const h = getHolding(a, t.fundCode, ccy, true);
-      const nativeNet = t.type === 'buy' ? amount + fee : amount - fee;
-      const hkd = ccy === 'HKD' ? nativeNet : (positive(d.legacyHKD[t.id]) ? Number(d.legacyHKD[t.id]) : null);
-      if (hkd === null) { mark(a, `${t.date} ${t.fundCode} 待補實際港幣收付`); h.basisKnown = false; }
-      if (t.type === 'buy') {
-        h.units += Number(t.units); h.nativeCost += nativeNet; h.basis += hkd || 0; a.deposits += hkd || 0;
-      } else if (t.type === 'sell') {
-        if (Number(t.units) > h.units + EPS || !h.units) { mark(a, `${t.date} ${t.fundCode} 舊紀錄賣出超過持倉`); continue; }
-        const fraction = Number(t.units) / h.units, cost = h.nativeCost * fraction, basis = h.basis * fraction;
-        h.units -= Number(t.units); h.nativeCost -= cost; h.basis -= basis;
-        a.withdrawals += hkd || 0; a.nativeGain[ccy] = (a.nativeGain[ccy] || 0) + nativeNet - cost;
-        if (hkd !== null && h.basisKnown) a.settledGain += hkd - basis;
-      } else { a.withdrawals += hkd || 0; a.nativeGain[ccy] = (a.nativeGain[ccy] || 0) + nativeNet; }
-      a.feeDetails.push({currency: ccy, amount: fee, hkd: hkd !== null && nativeNet > 0 ? fee * hkd / nativeNet : null});
+    const currenciesBySymbol = new Map();
+    for (const h of holdings.values()) {
+      if (!currenciesBySymbol.has(h.symbol)) currenciesBySymbol.set(h.symbol, new Set());
+      currenciesBySymbol.get(h.symbol).add(h.currency);
     }
     for (const h of holdings.values()) {
       if (h.units < EPS) { h.units = 0; continue; }
       const a = accounts[h.account];
-      const q = h.legacy ? (positive(nav[h.symbol]) ? { price: Number(nav[h.symbol]), date: '原基金頁淨值' } : null) : d.quotes[h.key];
+      const canonicalPrice = nav[h.key];
+      const legacyPrice = h.legacy && currenciesBySymbol.get(h.symbol).size === 1 ? nav[h.legacySymbol || h.symbol] : null;
+      const explicitQuote = d.quotes[h.key];
+      const q = positive(canonicalPrice) ? { price: Number(canonicalPrice), date: '基金紀錄現價' }
+        : explicitQuote && explicitQuote.date <= asOf ? explicitQuote
+        : positive(legacyPrice) ? { price: Number(legacyPrice), date: '基金紀錄現價', fromLegacy: true } : null;
       const r = rate(h.currency);
-      h.price = q && (h.legacy || q.date <= asOf) ? Number(q.price) : null;
+      h.price = q ? Number(q.price) : null;
       h.priceDate = q?.date; h.value = h.price ? h.price * h.units : null;
       h.valueHKD = h.value !== null && r ? h.value * r : null;
       h.unrealizedHKD = h.valueHKD !== null && h.basisKnown ? h.valueHKD - h.basis : null;
@@ -260,5 +272,5 @@
     const sum = k => all.reduce((n, a) => n + a[k], 0);
     return { accounts, holdings: [...holdings.values()], rows, issues, missing: [...new Set(missing)], total: { complete, net: complete ? sum('withdrawals') + sum('assets') - sum('deposits') : null, deposits: sum('deposits'), withdrawals: sum('withdrawals'), assets: sum('assets'), feesHKD: sum('feesHKD'), feesComplete: all.every(a => a.feesComplete), feesNative: all.reduce((out,a) => {for (const [c,n] of Object.entries(a.feesNative)) out[c]=(out[c]||0)+n; return out;},{}), pendingHKD: sum('pendingHKD'), estimated: all.some(a => a.estimated) } };
   }
-  return { blank, normalize, merge, atomicWrite, calculate, validateEvent, feeSuggestions, flexFee, trade25Active, feeKey, months, dateOK, ACCOUNTS };
+  return { blank, normalize, merge, atomicWrite, calculate, validateEvent, feeSuggestions, flexFee, trade25Active, feeKey, months, dateOK, platformForTransaction, instrumentKey, ACCOUNTS };
 });

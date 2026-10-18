@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Micy致富計畫 v2.0 — 港幣投資回報</title>
+<title>Micy致富計畫 v2.1 — 基金與美股紀錄</title>
 <link rel="stylesheet" href="./investment.css">
 <script src="./investment-engine.js"></script>
+<script src="./unified-ledger.js"></script>
 <link rel="icon" type="image/png" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
 <link rel="icon" type="image/svg+xml" href="./micy-icon.svg" data-github-icon="filled-svg">
 <link rel="apple-touch-icon" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
@@ -123,7 +124,8 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
 <script type="text/babel">
 
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
-const InvestmentPage = window.InvestmentPage;
+const InvestmentTools = window.InvestmentTools;
+const displayCode = UnifiedLedger.displayCode;
 
 // ---------------------------------------------------------------------------
 // Icons — inline SVGs replacing lucide-react
@@ -333,12 +335,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v2.0.0";
-const APP_RELEASE_DATE = "2026-10-17";
+const APP_VERSION = "v2.1.0";
+const APP_RELEASE_DATE = "2026-10-18";
 const APP_CHANGES = [
-  "新增港幣回報頁：Trade25 美股、美元現金、實際換匯與港幣成本一起記錄。",
+  "基金及美股統一在「基金紀錄」新增、查看及編輯，可選恆生、匯豐 Trade25 或匯豐 FlexInvest。",
   "FlexInvest 與 Trade25 分開記月費；逐月判斷、批次補記、待核實與已扣款分開。",
-  "完整 JSON 備份包含 v2.0 所有紀錄；保留 v1.7.1 原版及升級前的本機基金快照。",
+  "交易內可填實際港幣收付與費用；換匯及月費在同頁補記。完整備份保留所有原始紀錄。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -449,7 +451,7 @@ function uid() {
 }
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return localTodayStr();
 }
 
 function localTodayStr() {
@@ -612,8 +614,8 @@ function parseTransactionLine(rawLine) {
 
 function computeHoldings(transactions) {
   const byFund = {};
-  const sorted = [...transactions].sort((a, b) =>
-    a.date === b.date ? 0 : a.date < b.date ? -1 : 1
+  const sorted = transactions.filter(t=>t.date<=localTodayStr()).sort((a, b) =>
+    a.date === b.date ? (a.seq || 0) - (b.seq || 0) : a.date < b.date ? -1 : 1
   );
   for (const t of sorted) {
     if (!byFund[t.fundCode]) {
@@ -650,7 +652,7 @@ function computeHoldings(transactions) {
         h.cost = 0;
       }
     } else if (t.type === "dividend") {
-      h.dividendTotal += t.amount;
+      h.dividendTotal += t.amount - fee;
     }
   }
   return byFund;
@@ -658,7 +660,7 @@ function computeHoldings(transactions) {
 
 function computeRealizedGains(transactions, fundNames) {
   const results = [];
-  const sorted = [...transactions].sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
+  const sorted = transactions.filter(t=>t.date<=localTodayStr()).sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : (a.seq||0)-(b.seq||0)));
   const fundState = {};
   for (const t of sorted) {
     if (!fundState[t.fundCode]) fundState[t.fundCode] = { units: 0, cost: 0 };
@@ -701,7 +703,7 @@ function buildPriceSeries(priceHistory, navMap, today, navSourceMap = {}) {
   const codes = new Set([...Object.keys(priceHistory || {}), ...Object.keys(navMap || {})]);
   for (const code of codes) {
     const arr = ((priceHistory && priceHistory[code]) || [])
-      .filter((p) => p && p.date && Number.isFinite(Number(p.price)) && Number(p.price) > 0)
+      .filter((p) => p && p.date && p.date <= today && Number.isFinite(Number(p.price)) && Number(p.price) > 0)
       .map((p) => ({ date: p.date, price: Number(p.price) }))
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     // ★ navMap[code] 是 number（不是 {price} 物件），用 Number() 強制轉型
@@ -709,8 +711,9 @@ function buildPriceSeries(priceHistory, navMap, today, navSourceMap = {}) {
     // 截圖只有匯入日，沒有銀行估值日；不可虛構為今天的走勢點。
     if (Number.isFinite(navNow) && navNow > 0 && navSourceMap[code]?.type !== "screenshot-estimate") {
       const last = arr[arr.length - 1];
-      if (!last || last.date < today) arr.push({ date: today, price: navNow });
-      else if (last.date === today) last.price = navNow;
+      const priceDate=navSourceMap[code]?.date || today;
+      if (!last || last.date < priceDate) arr.push({date:priceDate,price:navNow});
+      else if (last.date === priceDate) last.price = navNow;
     }
     if (arr.length) series[code] = arr;
   }
@@ -719,8 +722,8 @@ function buildPriceSeries(priceHistory, navMap, today, navSourceMap = {}) {
 
 function computeDailyFloatingSeries(transactions, priceHistory, navMap, today, navSourceMap) {
   const out = { byDate: {}, dates: [] };
-  const txs = (transactions || []).filter((t) => t && t.date)
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const txs = (transactions || []).filter((t) => t && t.date && t.date <= today)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.seq||0)-(b.seq||0)));
   if (txs.length === 0) return out;
 
   const series = buildPriceSeries(priceHistory, navMap, today, navSourceMap);
@@ -918,7 +921,7 @@ function latestKnownNav(fundCode, priceHistory, navMap) {
   let best = null;
   for (const p of hist) {
     const v = Number(p.price);
-    if (!isFinite(v) || v <= 0) continue;
+    if (!isFinite(v) || v <= 0 || p.date > localTodayStr()) continue;
     if (!best || p.date > best.date) best = { date: p.date, price: v };
   }
   // 手動輸入的當前淨值視為最新（使用者剛從銀行 App 抄下來的）
@@ -1371,7 +1374,7 @@ function FundCard({ code, holding, nav, navSource, name, active, onToggleActive,
       <div onClick={onToggleActive} style={{ cursor: "pointer" }}>
         <div style={s.fundCardTop}>
           <div>
-            <span style={s.fundName}>{code}</span>
+            <span style={s.fundName}>{displayCode(code)}</span>
             {(name || holding.house) && (
               <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
                 {name && <span style={{ color: "var(--text-3)" }}>{name}</span>}
@@ -1466,153 +1469,56 @@ function FundCard({ code, holding, nav, navSource, name, active, onToggleActive,
 // Transaction Form
 // ---------------------------------------------------------------------------
 function TransactionForm({ initial, fundCodes, onCancel, onSave, onDelete }) {
-  const [house, setHouse] = useState(initial?.house || "");
-  const [fundCode, setFundCode] = useState(initial?.fundCode || "");
-  const [type, setType] = useState(initial?.type || "buy");
-  const [date, setDate] = useState(initial?.date || todayStr());
-  const [nav, setNav] = useState(initial?.nav ?? "");
-  const [units, setUnits] = useState(initial?.units ?? "");
-  const [amount, setAmount] = useState(initial?.amount ?? "");
-  const [fee, setFee] = useState(initial?.fee ?? "");
-  const [currency, setCurrency] = useState(initial?.currency || DEFAULT_CCY);
-  const [refNo, setRefNo] = useState(initial?.refNo || "");
-  const [note, setNote] = useState(initial?.note || "");
-  const [touched, setTouched] = useState(false);
-
-  const isDividend = type === "dividend";
-  const navNum = parseFloat(nav);
-  const unitsNum = parseFloat(units);
-  const amountNum = parseFloat(amount);
-
-  useEffect(() => {
-    if (!isDividend && !Number.isNaN(navNum) && !Number.isNaN(unitsNum) && amount === "") {
-      setAmount((navNum * unitsNum).toFixed(2));
-    }
-  }, [nav, units]);
-
-  const valid =
-    fundCode.trim() !== "" &&
-    date !== "" &&
-    !Number.isNaN(amountNum) && amountNum > 0 &&
-    (isDividend || (!Number.isNaN(unitsNum) && unitsNum > 0));
-
-  function handleSubmit(e) {
+  const [f,setF] = useState(() => ({platformId:'flexinvest',fundCode:'',type:'buy',date:todayStr(),nav:'',units:'',amount:'',fee:'',currency:DEFAULT_CCY,hkdAmount:'',settlement:'external',refNo:'',note:'',...initial,fundCode:initial?.symbol ?? displayCode(initial?.fundCode || '')}));
+  const [error,setError] = useState('');
+  const [detail,setDetail] = useState(!!initial?.feeParts);
+  const [parts,setParts] = useState(() => Object.fromEntries((initial?.feeParts || []).map(p=>[p.label,p.amount])));
+  const put = (key,value) => setF(p=>({...p,[key]:value}));
+  const isDividend=f.type==='dividend';
+  const totalFee=detail?Object.values(parts).reduce((n,v)=>n+Number(v||0),0):Number(f.fee||0);
+  const net=Number(f.amount||0)+(f.type==='buy'?totalFee:-totalFee);
+  const labelHKD=f.type==='buy'?'實付港幣總額（含全部費用）':'實收港幣淨額（已扣全部費用）';
+  function submit(e) {
     e.preventDefault();
-    setTouched(true);
-    if (!valid) return;
-    onSave({
-      house: house.trim(),
-      fundCode: fundCode.trim(),
-      type,
-      date,
-      nav: isDividend ? null : Number.isNaN(navNum) ? null : navNum,
-      units: isDividend ? 0 : unitsNum,
-      amount: amountNum,
-      fee: Number.isNaN(parseFloat(fee)) ? 0 : parseFloat(fee),
-      currency: currency.trim().toUpperCase() || DEFAULT_CCY,
-      refNo: refNo.trim(),
-      note: note.trim(),
-    });
+    try {
+      if(!f.fundCode.trim()&&!isDividend) throw Error('請輸入基金／股票代碼');
+      if(!/^[A-Z]{3}$/.test(f.currency.trim())) throw Error('請填三位幣別代碼，例如 HKD 或 USD');
+      if(f.settlement==='wallet'&&!['HKD','USD'].includes(f.currency)) throw Error('現金餘額目前支援 HKD／USD；其他幣別請使用直接付款／收款');
+      if(!InvestmentLedger.dateOK(f.date)||f.date>localTodayStr()) throw Error('請填正確的實際交易日期');
+      if(!(Number(f.amount)>0)||(!isDividend&&!(Number(f.units)>0))) throw Error('金額及單位數須大於零');
+      if(!Number.isFinite(totalFee)||totalFee<0||(f.type!=='buy'&&totalFee>=Number(f.amount))) throw Error('請核對費用金額；費用不可超過收款');
+      if(f.hkdAmount!==''&&f.hkdAmount!=null&&!(Number(f.hkdAmount)>0)) throw Error('港幣金額須大於零，或留空待補');
+      const record={platformId:f.platformId,house:InvestmentLedger.ACCOUNTS[f.platformId],fundCode:f.fundCode.trim(),type:f.type,date:f.date,nav:isDividend?null:Number(f.nav)||null,units:isDividend?0:Number(f.units),amount:Number(f.amount),fee:totalFee,currency:f.currency.toUpperCase().trim(),settlement:f.settlement,hkdAmount:f.settlement==='external'&&f.hkdAmount!==''&&f.hkdAmount!=null?Number(f.hkdAmount):null,refNo:f.refNo.trim(),note:f.note.trim()};
+      if(detail) record.feeParts=Object.entries(parts).map(([label,amount])=>({label,amount:Number(amount||0)}));
+      else record.feeParts=null;
+      onSave(record);
+    }catch(err){setError(err.message);}
   }
-
-  return (
-    <div style={s.modalBackdrop} onClick={onCancel}>
-      <form style={s.modal} onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
-        <div style={s.modalHeader}>
-          <h2 style={s.modalTitle}>{initial ? "編輯交易" : "手動新增交易"}</h2>
-          <button type="button" style={s.closeBtn} onClick={onCancel}><X size={18} /></button>
-        </div>
-        <div style={s.formGrid}>
-          <label style={s.field}>
-            <span style={s.fieldLabel}>發行機構（選填）</span>
-            <input style={s.input} value={house} onChange={(e) => setHouse(e.target.value)} placeholder="例如：滙豐" />
-          </label>
-          <label style={s.field}>
-            <span style={s.fieldLabel}>基金代碼</span>
-            <input style={s.input} value={fundCode} onChange={(e) => setFundCode(e.target.value)}
-              placeholder="例如：U50009" list="fund-code-list" autoFocus />
-            <datalist id="fund-code-list">
-              {fundCodes.map((c) => <option key={c} value={c} />)}
-            </datalist>
-            {touched && !fundCode.trim() && <span style={s.fieldError}>請輸入基金代碼</span>}
-          </label>
-          <label style={s.field}>
-            <span style={s.fieldLabel}>交易類型</span>
-            <div style={s.typeToggle}>
-              {Object.entries(TYPE_META).map(([key, meta]) => (
-                <button type="button" key={key} onClick={() => setType(key)}
-                  style={{...s.typeToggleBtn, ...(type === key ? { background: meta.color + "22", color: meta.color, borderColor: meta.color } : {}) }}>
-                  {meta.label}
-                </button>
-              ))}
-            </div>
-          </label>
-          <label style={s.field}>
-            <span style={s.fieldLabel}>交易日期</span>
-            <input type="date" style={s.input} value={date} onChange={(e) => setDate(e.target.value)} />
-          </label>
-          {!isDividend && (
-            <label style={s.field}>
-              <span style={s.fieldLabel}>成交價（選填）</span>
-              <input type="number" step="0.001" style={{...s.input, ...s.mono}}
-                value={nav} onChange={(e) => setNav(e.target.value)} placeholder="0.000" />
-            </label>
-          )}
-          {!isDividend && (
-            <label style={s.field}>
-              <span style={s.fieldLabel}>單位數</span>
-              <input type="number" step="0.001" style={{...s.input, ...s.mono}}
-                value={units} onChange={(e) => setUnits(e.target.value)} placeholder="0.000" />
-              {touched && (Number.isNaN(unitsNum) || unitsNum <= 0) && <span style={s.fieldError}>請輸入大於 0 的單位數</span>}
-            </label>
-          )}
-          <label style={s.field}>
-            <span style={s.fieldLabel}>{isDividend ? "派息金額" : "交易金額"}</span>
-            <input type="number" style={{...s.input, ...s.mono}}
-              value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
-            {touched && (Number.isNaN(amountNum) || amountNum <= 0) && <span style={s.fieldError}>請輸入大於 0 的金額</span>}
-          </label>
-          <label style={s.field}>
-            <span style={s.fieldLabel}>幣別</span>
-            <input style={s.input} value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} placeholder="HKD" />
-          </label>
-          {!isDividend && (
-            <label style={s.field}>
-              <span style={s.fieldLabel}>手續費（選填）</span>
-              <input type="number" style={{...s.input, ...s.mono}}
-                value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" />
-            </label>
-          )}
-          <label style={s.field}>
-            <span style={s.fieldLabel}>參考編號（選填）</span>
-            <input style={s.input} value={refNo} onChange={(e) => setRefNo(e.target.value)} placeholder="例如：P188330" />
-          </label>
-          <label style={{...s.field, gridColumn: "1 / -1"}}>
-            <span style={s.fieldLabel}>備註（選填）</span>
-            <input style={s.input} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：定期定額扣款" />
-          </label>
-        </div>
-        <div style={{...s.modalFooter, ...(initial ? { justifyContent: "space-between" } : {})}}>
-          {initial && (
-            <button type="button" style={s.dangerBtn} onClick={() => onDelete(initial.id)} title="刪除這筆交易">
-              <Trash2 size={13} /> 刪除交易
-            </button>
-          )}
-          <div style={{ display: "flex", gap: 10 }}>
-            <button type="button" style={s.cancelBtn} onClick={onCancel}>取消</button>
-            <button type="submit" style={s.saveBtn} className="fl-btn">
-              {initial ? "儲存變更" : "新增交易"}
-            </button>
-          </div>
-        </div>
-      </form>
+  function numeric(label,key,extra={}) {return <label style={s.field}><span style={s.fieldLabel}>{label}</span><input aria-label={label} style={{...s.input,...s.mono}} type="number" min="0" step="any" value={f[key]??''} onChange={e=>put(key,e.target.value)} {...extra}/></label>;}
+  return <div style={s.modalBackdrop} onClick={onCancel}><form style={s.modal} onClick={e=>e.stopPropagation()} onSubmit={submit} role="dialog" aria-modal="true" aria-label="基金交易">
+    <div style={s.modalHeader}><h2 style={s.modalTitle}>{initial?'編輯交易':'手動新增交易'}</h2><button type="button" style={s.closeBtn} aria-label="關閉交易" onClick={onCancel}><X size={18}/></button></div>
+    <div style={s.formGrid}>
+      <label style={s.field}><span style={s.fieldLabel}>平台</span><select aria-label="平台" style={s.input} value={f.platformId} onChange={e=>setF(p=>({...p,platformId:e.target.value,...(!initial?{currency:e.target.value==='trade25'?'USD':'HKD'}:{})}))}>{Object.entries(InvestmentLedger.ACCOUNTS).map(([k,n])=><option key={k} value={k}>{n}</option>)}</select></label>
+      <label style={s.field}><span style={s.fieldLabel}>基金／股票代碼</span><input aria-label="基金／股票代碼" style={s.input} value={f.fundCode} onChange={e=>put('fundCode',e.target.value)} placeholder="例如 U50009、AAPL" list="fund-code-list" autoFocus/><datalist id="fund-code-list">{fundCodes.map(c=><option key={c} value={c}/>)}</datalist></label>
+      <label style={s.field}><span style={s.fieldLabel}>交易類型</span><select aria-label="交易類型" style={s.input} value={f.type} onChange={e=>put('type',e.target.value)}><option value="buy">買入／認購</option><option value="sell">賣出／贖回</option><option value="dividend">股息／派息</option></select></label>
+      <label style={s.field}><span style={s.fieldLabel}>交易日期</span><input aria-label="交易日期" style={s.input} type="date" required max={localTodayStr()} value={f.date} onChange={e=>put('date',e.target.value)}/></label>
+      {!isDividend&&<>{numeric('成交價（選填）','nav')}{numeric('單位／股數','units',{required:true})}</>}
+      {numeric(isDividend?'派息總額（未扣稅）':'交易總額（未含費用）','amount',{required:true})}
+      <label style={s.field}><span style={s.fieldLabel}>幣別</span><input aria-label="幣別" style={s.input} value={f.currency} onChange={e=>put('currency',e.target.value.toUpperCase())} required list="transaction-currencies"/><datalist id="transaction-currencies"><option value="HKD"/><option value="USD"/></datalist></label>
+      {!isDividend&&Number(f.nav)>0&&Number(f.units)>0&&<button type="button" style={s.ghostBtn} onClick={()=>put('amount',String(Number(f.nav)*Number(f.units)))}>按成交價 × 單位填金額</button>}
+      <label style={s.field}><span style={s.fieldLabel}>結算方式</span><select aria-label="結算方式" style={s.input} value={f.settlement} onChange={e=>put('settlement',e.target.value)}><option value="external">直接付款／收款（可補港幣金額）</option><option value="wallet">使用／存入已記錄現金餘額</option></select></label>
+      {f.currency!=='HKD'&&f.settlement==='external'&&numeric(labelHKD,'hkdAmount',{placeholder:'舊紀錄可留空，稍後補填'})}
     </div>
-  );
+    {f.currency!=='HKD'&&f.settlement==='external'&&<p style={{fontSize:12,color:'var(--text-3)'}}>填銀行實際扣款或換回港幣的金額，費用已包含其中，不會再扣一次。{Number(f.hkdAmount)>0&&net>0&&<> 這筆實收實付比率：1 {f.currency} ≈ HK${(Number(f.hkdAmount)/net).toFixed(5)}。</>}</p>}
+    <details open={detail} style={{margin:'14px 0'}}><summary onClick={e=>{e.preventDefault();if(!detail&&!Object.keys(parts).length&&totalFee)setParts({其他:totalFee});setDetail(!detail);}}>分項記錄費用</summary>{detail&&<div style={s.formGrid}>{['佣金','平台交易費','政府／交易所費','股息預扣稅','其他'].map(k=><label key={k} style={s.field}><span style={s.fieldLabel}>{k}（{f.currency}）</span><input aria-label={k} style={s.input} type="number" min="0" step="any" value={parts[k]??''} onChange={e=>setParts(p=>({...p,[k]:e.target.value}))}/></label>)}</div>}</details>
+    {!detail&&numeric('交易費用／預扣稅總額（原幣）','fee')}
+    <p style={{fontSize:12,color:'var(--text-3)'}}>原幣{f.type==='buy'?'合共支付':'淨收'}：{fmtMoney(net,f.currency)}。賣出後美元仍留在戶口，選「存入已記錄現金餘額」；換回港幣時再記換匯。</p>
+    <div style={s.formGrid}><label style={s.field}><span style={s.fieldLabel}>參考編號（選填）</span><input aria-label="參考編號" style={s.input} value={f.refNo} onChange={e=>put('refNo',e.target.value)}/></label><label style={s.field}><span style={s.fieldLabel}>備註（選填）</span><input aria-label="備註" style={s.input} value={f.note} onChange={e=>put('note',e.target.value)}/></label></div>
+    {error&&<p role="alert" style={s.fieldError}>{error}</p>}
+    <div style={{...s.modalFooter,justifyContent:'space-between'}}>{initial&&<button type="button" style={s.dangerBtn} onClick={()=>onDelete(initial.id)}>刪除交易</button>}<div style={{display:'flex',gap:10}}><button type="button" style={s.cancelBtn} onClick={onCancel}>取消</button><button type="submit" style={s.saveBtn}>{initial?'儲存變更':'新增交易'}</button></div></div>
+  </form></div>;
 }
 
-// ---------------------------------------------------------------------------
-// Fund Name Manager Modal
-// ---------------------------------------------------------------------------
 function FundNameModal({ holdings, fundNames, onSave, onClose }) {
   const allCodes = useMemo(() => {
     const set = new Set([...Object.keys(holdings), ...Object.keys(fundNames)]);
@@ -1652,7 +1558,7 @@ function FundNameModal({ holdings, fundNames, onSave, onClose }) {
           {allCodes.length === 0 && <p style={{ fontSize: 12.5, color: "var(--text-4)", textAlign: "center", padding: 20 }}>尚無基金紀錄</p>}
           {allCodes.map((code) => (
             <div key={code} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
-              <span style={{...s.mono, fontSize: 13, fontWeight: 600, minWidth: 80}}>{code}</span>
+              <span style={{...s.mono, fontSize: 13, fontWeight: 600, minWidth: 80}}>{displayCode(code)}</span>
               <input
                 type="text"
                 value={editMap[code] || ""}
@@ -3094,7 +3000,7 @@ function buildAllocationSnapshot(holdings, effectiveNavMap, plan) {
   for (const [code, holding] of Object.entries(holdings)) {
     if (!holding || holding.units <= 0) continue;
     count++;
-    const category = plan.fundCategories[code];
+    const category = (plan.fundCategories[code] ?? plan.fundCategories[displayCode(code)]);
     if (!PLAN_CATEGORY_KEYS.has(category)) missing.category.push(code);
     const valuation = valueHolding(holding, effectiveNavMap[code]);
     if (valuation.missing) missing.nav.push(code);
@@ -3118,11 +3024,11 @@ function AllocationPlanCard({ snapshot, plan, holdings, fundNames, navMap, price
   if (snapshot.complete) {
     for (const [code, h] of Object.entries(holdings)) {
       if (!h || h.units <= 0) continue;
-      const category = plan.fundCategories[code];
+      const category = (plan.fundCategories[code] ?? plan.fundCategories[displayCode(code)]);
       if (category !== "hsi" && category !== "china") continue;
       const target = plan.targets[category];
       if (snapshot.pct[category] <= target.max) continue;
-      const threshold = Number(plan.recoveryNav[code]);
+      const threshold = Number(plan.recoveryNav[code] ?? plan.recoveryNav[displayCode(code)]);
       const known = latestKnownNav(code, priceHistory, navMap);
       const item = { code, name: fundNames[code] || code, category, threshold, current: known && known.price };
       if (Number.isFinite(threshold) && threshold > 0 && known && known.price >= threshold) reached.push(item);
@@ -3218,10 +3124,10 @@ function AllocationSettingsModal({ plan, holdings, fundNames, navMap, priceHisto
       </div>)}
       <h3 style={{ fontSize: 13, margin: "17px 0 9px" }}>基金分類與回升觀察價</h3>
       {current.length === 0 ? <p style={{ fontSize: 11.5, color: "var(--text-4)" }}>目前沒有持倉基金。</p> : current.map(([code, h]) => {
-        const category = draft.fundCategories[code] || "";
+        const category = draft.fundCategories[code] || draft.fundCategories[displayCode(code)] || "";
         const known = latestKnownNav(code, priceHistory, navMap);
         return <div key={code} style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 0" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 7 }}>{fundNames[code] || code} <span style={{ color: "var(--text-4)", fontWeight: 400 }}>{code}</span></div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 7 }}>{fundNames[code] || code} <span style={{ color: "var(--text-4)", fontWeight: 400 }}>{displayCode(code)}</span></div>
           <label style={labelStyle}>配置類別</label>
           <select style={s.input} value={category} onChange={(e) => setDraft((prev) => ({ ...prev, fundCategories: { ...prev.fundCategories, [code]: e.target.value } }))}>
             <option value="">請選擇</option>
@@ -3231,7 +3137,7 @@ function AllocationSettingsModal({ plan, holdings, fundNames, navMap, priceHisto
           {(category === "hsi" || category === "china") && <label style={{ ...labelStyle, marginTop: 9 }}>
             回升觀察淨值（選填；達標且類別超配時提醒檢視）
             <input type="number" min="0" step="any" inputMode="decimal" style={{ ...s.input, marginTop: 5 }} placeholder="由你決定，不會自動賣出"
-              value={draft.recoveryNav[code] ?? ""} onChange={(e) => setDraft((prev) => ({ ...prev, recoveryNav: { ...prev.recoveryNav, [code]: e.target.value } }))} />
+              value={draft.recoveryNav[code] ?? draft.recoveryNav[displayCode(code)] ?? ""} onChange={(e) => setDraft((prev) => ({ ...prev, recoveryNav: { ...prev.recoveryNav, [code]: e.target.value } }))} />
             <span style={{ display: "block", marginTop: 4, fontSize: 10.5, color: "var(--text-4)" }}>
               目前已儲存淨值：{known ? fmtNum(known.price, 4) : "—"}；每單位持倉成本約 {h.units > 0 ? fmtNum(h.cost / h.units, 4) : "—"}。請自行核對最新淨值。
             </span>
@@ -3284,7 +3190,7 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
       const profile = account === "Demo" ? null : profiles[code];
       const name = fundNames[code] || (profile && profile.title) || code;
       if (!profile) return <section key={code} style={{ ...s.ledgerSection, padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>{name} <span style={{ color: "var(--text-4)", fontSize: 11, fontWeight: 400 }}>{code}</span></div>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{name} <span style={{ color: "var(--text-4)", fontSize: 11, fontWeight: 400 }}>{displayCode(code)}</span></div>
         <p style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.6 }}>{account === "Demo" ? "Demo 是虛構資料，不會配對真實基金的官方持倉。" : "尚未找到與此基金代碼及股份類別核對過的官方持倉；不會用相似名稱基金的資料代替。"}</p>
       </section>;
       const ageDays = Math.max(0, Math.floor((Date.now() - new Date(profile.asOf + "T00:00:00").getTime()) / 86400000));
@@ -3292,7 +3198,7 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 15, color: "var(--text)" }}>{name}</h2>
-            <div style={{ color: "var(--text-4)", fontSize: 11, marginTop: 3 }}>{code} · 官方：{profile.title}</div>
+            <div style={{ color: "var(--text-4)", fontSize: 11, marginTop: 3 }}>{displayCode(code)} · 官方：{profile.title}</div>
           </div>
           <a href={profile.source} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", fontSize: 11, whiteSpace: "nowrap" }}>查看官方月報 ↗</a>
         </div>
@@ -3332,12 +3238,14 @@ function FundLedger() {
     downloadFile(raw, `基金帳本-升級前v1.7.1-${account}.json`, "application/json");
   }
 
-  const [transactions, setTransactions] = useState([]);
-  const [navMap, setNavMap] = useState({});
-  const [navSourceMap, setNavSourceMap] = useState({});
-  const [fundNames, setFundNames] = useState({});
-  const [priceHistory, setPriceHistory] = useState({});
-  const [trackingMap, setTrackingMap] = useState({});
+  const [legacyTransactions, setTransactions] = useState([]);
+  const [storedNavMap, setNavMap] = useState({});
+  const [storedNavSourceMap, setNavSourceMap] = useState({});
+  const [storedFundNames, setFundNames] = useState({});
+  const [storedPriceHistory, setPriceHistory] = useState({});
+  const [storedTrackingMap, setTrackingMap] = useState({});
+  const unified = useMemo(() => UnifiedLedger.build(legacyTransactions, investmentData, {navMap:storedNavMap,navSourceMap:storedNavSourceMap,fundNames:storedFundNames,priceHistory:storedPriceHistory,trackingMap:storedTrackingMap}), [legacyTransactions,investmentData,storedNavMap,storedNavSourceMap,storedFundNames,storedPriceHistory,storedTrackingMap]);
+  const {transactions,navMap,navSourceMap,fundNames,priceHistory,trackingMap} = unified;
   const [allocationPlan, setAllocationPlan] = useState(defaultAllocationPlan);
   const [allocationSettingsOpen, setAllocationSettingsOpen] = useState(false);
   const [allocationSnoozedDate, setAllocationSnoozedDate] = useState("");
@@ -3477,8 +3385,8 @@ function FundLedger() {
   const [theme, setTheme] = useState(lsGet("fundLedger_theme", "dark"));
   const TAB_KEY = "fundLedger_activeTab_v2";
   const [activeTab, setActiveTab] = useState(() => {
-    const saved = lsGet(TAB_KEY, "investment");
-    return saved === "advice" ? "tables" : saved;
+    const saved = lsGet(TAB_KEY, "overview");
+    return saved === "advice" ? "tables" : saved === "investment" ? "overview" : saved;
   });
   useEffect(() => { lsSet(TAB_KEY, activeTab); }, [activeTab]);
   const GAIN_KEY = "fundLedger_gainMode";
@@ -3602,7 +3510,8 @@ function FundLedger() {
           setFundNames(seed.fundNames);
           setPriceHistory(seed.priceHistory);
           setTrackingMap(tkRes && tkRes.value ? JSON.parse(tkRes.value) : {});
-          setActiveHouse(lsGet(HOUSE_FILTER_KEY, "__all__"));
+          const savedHouse=lsGet(HOUSE_FILTER_KEY,"__all__");
+        setActiveHouse(Object.values(InvestmentLedger.ACCOUNTS).includes(savedHouse)?savedHouse:"__all__");
           setHideZeroUnits(lsGet(HIDE_ZERO_KEY, false));
           setLoaded(true);
           return;
@@ -3650,7 +3559,8 @@ function FundLedger() {
           persistTracking(tk);
         }
         setTrackingMap(tk);
-        setActiveHouse(lsGet(HOUSE_FILTER_KEY, "__all__"));
+        const savedHouse=lsGet(HOUSE_FILTER_KEY,"__all__");
+        setActiveHouse(Object.values(InvestmentLedger.ACCOUNTS).includes(savedHouse)?savedHouse:"__all__");
         setHideZeroUnits(lsGet(HIDE_ZERO_KEY, false));
       } catch (e) {
         setError("讀取資料時發生問題，將從空白帳本開始。");
@@ -3795,11 +3705,19 @@ function FundLedger() {
     lsSet(acctKey(ALLOCATION_SNOOZE_KEY), today);
   }
 
+  function scopeMetadata(map, emptyValue) {
+    const next={...map};
+    for(const i of Object.values(unified.instruments)) {
+      next[i.compositeKey]=Object.hasOwn(map,i.fundCode)?map[i.fundCode]:emptyValue;
+      if(i.fundCode!==i.compositeKey) delete next[i.fundCode];
+    }
+    return next;
+  }
   function saveTracking(fundCode, cfg) {
     const next = { ...trackingMap };
     if (cfg === null) delete next[fundCode];
     else next[fundCode] = cfg;
-    persistTracking(next);
+    persistTracking(scopeMetadata(next,null));
     setTrackFund(null);
   }
 
@@ -3846,11 +3764,9 @@ function FundLedger() {
   // 逐筆交易盈虧（平均成本法）：賣出盈虧 = 賣出金額 − 賣出時的滾動均價 × 單位數
   const txPnlMap = useMemo(() => {
     const map = {};
-    const sorted = [...transactions].sort((a, b) => {
+    const sorted = transactions.filter(t=>t.date<=localTodayStr()).sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-      if (a.type === "buy" && b.type !== "buy") return -1;
-      if (b.type === "buy" && a.type !== "buy") return 1;
-      return 0;
+      return (a.seq || 0) - (b.seq || 0);
     });
     const running = {}; // { fundCode: { units, cost } }
     sorted.forEach((t) => {
@@ -3858,12 +3774,12 @@ function FundLedger() {
       const r = running[t.fundCode];
       if (t.type === "buy") {
         r.units += t.units || 0;
-        r.cost += t.amount || 0;
+        r.cost += (t.amount || 0) + (t.fee || 0);
         map[t.id] = 0;
       } else if (t.type === "sell") {
         const avgCost = r.units > 0 ? r.cost / r.units : 0;
         const sellUnits = t.units || 0;
-        const sellAmount = (t.nav != null && sellUnits > 0) ? t.nav * sellUnits : (t.amount || 0);
+        const sellAmount = (t.amount || 0) - (t.fee || 0);
         map[t.id] = sellAmount - avgCost * sellUnits;
         if (sellUnits > 0 && r.units > 0) {
           const ratio = Math.min(1, sellUnits / r.units);
@@ -3871,7 +3787,7 @@ function FundLedger() {
           r.cost -= r.cost * ratio;
         }
       } else if (t.type === "dividend") {
-        map[t.id] = t.amount || 0;
+        map[t.id] = (t.amount || 0) - (t.fee || 0);
       } else {
         map[t.id] = 0;
       }
@@ -3905,44 +3821,66 @@ function FundLedger() {
   function openAdd() { setEditingId(null); setFormOpen(true); }
   function openEdit(t) { setEditingId(t.id); setFormOpen(true); }
 
-  function saveTransaction(data) {
-    if (editingId) {
-      const old = transactions.find((t) => t.id === editingId);
-      if (old && old.nav && old.fundCode && old.date) removePricePoint(old.fundCode, old.date);
-      persistTransactions(transactions.map((t) => (t.id === editingId ? { ...data, id: editingId } : t)));
-    } else {
-      persistTransactions([...transactions, { ...data, id: uid() }]);
-    }
-    setFormOpen(false);
-    setEditingId(null);
-    if (data.nav) addPricePoint(data.fundCode, data.date, data.nav);
+  function accountingNav() {
+    return Object.fromEntries(Object.values(unified.instruments).filter(i => effNavMap[i.fundCode] > 0).map(i => [i.quoteKey,effNavMap[i.fundCode]]));
   }
-
+  function saveTransaction(data) {
+    if (investmentLoadError) throw Error(investmentLoadError);
+    const old = editingId ? transactions.find(t => t.id === editingId) : null;
+    let nextLegacy = legacyTransactions, nextV2 = investmentData;
+    if (old?.source === 'investment') {
+      const previous = investmentData.events.find(e => e.id === old.sourceId);
+      const event = {...previous,...data,account:data.platformId,symbol:data.fundCode,price:data.nav,hkd:data.hkdAmount,seq:previous.seq};
+      if (!data.feeParts) delete event.feeParts;
+      nextV2 = {...investmentData,events:investmentData.events.map(e => e.id===previous.id?event:e)};
+    } else {
+      const record = {...(old ? legacyTransactions.find(t=>t.id===old.sourceId):{}),...data,id:old?.sourceId || uid(),seq:old ? (old.seq ?? legacyTransactions.findIndex(t=>t.id===old.sourceId)) : Date.now()};
+      nextLegacy = old ? legacyTransactions.map(t=>t.id===old.sourceId?record:t) : [...legacyTransactions,record];
+    }
+    if(old?.source==='legacy') { const supplemental={...nextV2.legacyHKD};delete supplemental[old.sourceId];nextV2={...nextV2,legacyHKD:supplemental}; }
+    const normalized = InvestmentLedger.normalize(nextV2);
+    const before = InvestmentLedger.calculate(investmentData,legacyTransactions,accountingNav(),localTodayStr());
+    const after = InvestmentLedger.calculate(normalized,nextLegacy,accountingNav(),localTodayStr());
+    const newIssue = after.issues.find(i=>!before.issues.some(j=>j.id===i.id&&j.message===i.message));
+    if(newIssue) throw Error(newIssue.message);
+    InvestmentLedger.atomicWrite(localStorage,{[acctKey(STORAGE_KEY)]:JSON.stringify(nextLegacy),[acctKey(INVESTMENT_KEY)]:JSON.stringify(normalized)});
+    setTransactions(nextLegacy);setInvestmentData(normalized);
+    if(data.nav) addPricePoint(`${data.fundCode}@@${data.platformId}@@${data.currency}`,data.date,data.nav);
+    setFormOpen(false);setEditingId(null);setError('');
+  }
   function deleteTransaction(id) {
-    persistTransactions(transactions.filter((t) => t.id !== id));
-    setConfirmDeleteId(null);
-    setFormOpen(false);
-    setEditingId(null);
+    try {
+      const old=transactions.find(t=>t.id===id);
+      const nextLegacy=old?.source==='legacy'?legacyTransactions.filter(t=>t.id!==old.sourceId):legacyTransactions;
+      const nextV2={...investmentData,events:old?.source==='investment'?investmentData.events.filter(e=>e.id!==old.sourceId):investmentData.events};
+      const before=InvestmentLedger.calculate(investmentData,legacyTransactions,accountingNav(),localTodayStr());
+      const after=InvestmentLedger.calculate(nextV2,nextLegacy,accountingNav(),localTodayStr());
+      if(after.issues.some(i=>!before.issues.some(j=>j.id===i.id&&j.message===i.message))) throw Error('刪除會令後續交易無法對帳，請先核對相關賣出或換匯。');
+      InvestmentLedger.atomicWrite(localStorage,{[acctKey(STORAGE_KEY)]:JSON.stringify(nextLegacy),[acctKey(INVESTMENT_KEY)]:JSON.stringify(nextV2)});
+      setTransactions(nextLegacy);setInvestmentData(nextV2);setConfirmDeleteId(null);setFormOpen(false);setEditingId(null);
+    } catch(e) {setError(e.message);}
   }
 
   function updateNav(code, val) {
-    const nextNav = { ...navMap };
-    if (val === "") delete nextNav[code]; else nextNav[code] = val;
+    const nextNav = { ...storedNavMap };
+    const scope = unified.instruments[code]?.compositeKey || code;
+    if (val === "") { nextNav[scope]=null; if(scope!==code) delete nextNav[code]; } else nextNav[scope] = val;
     persistNav(nextNav);
     if (navSourceMap[code]) {
-      const nextSources = { ...navSourceMap };
+      const nextSources = { ...storedNavSourceMap };
       delete nextSources[code];
+      delete nextSources[scope];
       persistNavSource(nextSources);
     }
     if (val !== "") {
       setPriceHistory((prev) => {
-        const hist = prev[code] ? [...prev[code]] : [];
+        const hist = prev[scope] ? [...prev[scope]] : [];
         const d = todayStr();
         const idx = hist.findIndex((p) => p.date === d);
         const rec = { date: d, price: val };
         if (idx >= 0) hist[idx] = rec; else hist.push(rec);
         hist.sort((a, b) => (a.date < b.date ? -1 : 1));
-        const merged = { ...prev, [code]: hist };
+        const merged = { ...prev, [scope]: hist };
         try { storage.set(PRICE_HISTORY_KEY, JSON.stringify(merged)); } catch (e) { setError("儲存價格紀錄失敗，請稍後再試。"); }
         return merged;
       });
@@ -3950,11 +3888,12 @@ function FundLedger() {
   }
 
   function applyPortfolioNav(rows) {
-    const nextNav = { ...navMap };
-    const nextSources = { ...navSourceMap };
+    const nextNav = { ...storedNavMap };
+    const nextSources = { ...storedNavSourceMap };
     rows.forEach(({ code, price }) => {
-      nextNav[code] = price;
-      nextSources[code] = { type: "screenshot-estimate", importedAt: new Date().toISOString() };
+      const scope=unified.instruments[code]?.compositeKey || code;
+      nextNav[scope] = price;
+      nextSources[scope] = { type: "screenshot-estimate", importedAt: new Date().toISOString() };
     });
     persistNav(nextNav);
     persistNavSource(nextSources);
@@ -4015,20 +3954,21 @@ function FundLedger() {
       downloadFile(JSON.stringify({recoveryOnly:true,account,raw},null,2), `基金帳本-原始資料救援-${todayStr()}.json`, "application/json");
       setError("已下載原始資料救援檔；此檔保留損壞資料供修復，不能當一般備份匯入。"); return;
     }
-    const payload = { exportedAt: new Date().toISOString(), version: 7, appVersion: APP_VERSION, investmentLedger: investmentData, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
+    const payload = { exportedAt: new Date().toISOString(), version: 7, appVersion: APP_VERSION, investmentLedger: investmentData, transactions:legacyTransactions, navMap:storedNavMap, navSourceMap:storedNavSourceMap, fundNames:storedFundNames, priceHistory:storedPriceHistory, trackingMap:storedTrackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
   }
 
   function exportCsv() {
-    const header = ["日期", "機構", "基金代碼", "基金名稱", "類型", "價格", "單位數", "金額", "幣別", "手續費", "參考編號", "備註"];
+    const header = ["日期", "機構", "基金代碼", "基金名稱", "類型", "價格", "單位數", "金額", "幣別", "手續費", "參考編號", "備註", "平台代號", "實際港幣", "結算方式", "紀錄識別碼", "來源", "同日順序", "費用明細"];
     const rows = [...transactions].sort((a, b) => (a.date < b.date ? -1 : 1)).map((t) => [
-      t.date, t.house || "", t.fundCode, fundNames[t.fundCode] || "",
+      t.date, t.house || "", t.symbol || displayCode(t.fundCode), fundNames[t.fundCode] || "",
       TYPE_META[t.type]?.label || t.type, t.nav ?? "",
       t.type === "dividend" ? "" : t.units, t.amount,
       t.currency || DEFAULT_CCY, t.fee || 0, t.refNo || "",
       (t.note || "").replace(/[\n,]/g, " "),
+      t.platformId, t.hkdAmount ?? t.hkd ?? investmentData.legacyHKD[t.sourceId] ?? "",t.settlement || "external",t.sourceId,t.source,t.seq ?? "",t.feeParts?JSON.stringify(t.feeParts):"",
     ]);
     const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const content = "\uFEFF" + csv;
@@ -4108,7 +4048,7 @@ function FundLedger() {
     const rows = parseCsvRows(text);
     if (rows.length < 2) return [];
     const header = rows[0].map((h) => h.trim());
-    const want = { 日期: "date", 機構: "house", 基金代碼: "fundCode", 基金名稱: "fundName", 類型: "type", 價格: "nav", 單位數: "units", 金額: "amount", 幣別: "currency", 手續費: "fee", 參考編號: "refNo", 備註: "note" };
+    const want = { 日期: "date", 機構: "house", 基金代碼: "fundCode", 基金名稱: "fundName", 類型: "type", 價格: "nav", 單位數: "units", 金額: "amount", 幣別: "currency", 手續費: "fee", 參考編號: "refNo", 備註: "note", 平台代號:"platformId", 實際港幣:"hkdAmount", 結算方式:"settlement", 紀錄識別碼:"id", 來源:"sourceKind", 同日順序:"seq", 費用明細:"feeParts" };
     const idx = {};
     header.forEach((h, i) => { if (want[h]) idx[want[h]] = i; });
     if (idx.date === undefined || idx.fundCode === undefined) return [];
@@ -4125,7 +4065,13 @@ function FundLedger() {
       if (!type || !fundCode) continue;
       const navRaw = get("nav");
       out.push({
-        id: uid(),
+        id: get("id") || uid(),
+        platformId: get("platformId") || "flexinvest",
+        hkdAmount:get("hkdAmount")!==""?num(get("hkdAmount")):null,
+        settlement:get("settlement") || "external",
+        sourceKind:get("sourceKind") || "legacy",
+        seq:get("seq")!==""?num(get("seq")):undefined,
+        feeParts:get("feeParts")?JSON.parse(get("feeParts")):null,
         house: get("house"),
         fundCode,
         type,
@@ -4142,6 +4088,12 @@ function FundLedger() {
     return out;
   }
 
+  function csvImportPayload(rows,fileName) {
+    const originals=rows.filter(t=>t.sourceKind!=='investment').map(({sourceKind,...t})=>t);
+    const events=rows.filter(t=>t.sourceKind==='investment').map(t=>({id:t.id,type:t.type,account:t.platformId,symbol:t.fundCode,date:t.date,currency:t.currency,settlement:t.settlement,amount:t.amount,units:t.units,price:t.nav,hkd:t.hkdAmount,fee:t.fee,feeParts:t.feeParts,seq:t.seq,note:t.note,refNo:t.refNo}));
+    return {kind:'csv',transactions:originals,navMap:{},fundNames:{},priceHistory:{},fileName,investmentLedger:events.length?InvestmentLedger.normalize({...InvestmentLedger.blank(),events}):null};
+  }
+
   function handleCsvFile(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -4151,7 +4103,7 @@ function FundLedger() {
       try {
         const tx = parseCsvTransactions(reader.result);
         if (!tx.length) throw new Error("無可匯入資料");
-        setImportPending({ kind: "csv", transactions: tx, navMap: {}, fundNames: {}, priceHistory: {}, fileName: file.name });
+        setImportPending(csvImportPayload(tx,file.name));
       } catch (err) {
         setError("這個 CSV 檔案無法讀取，請確認是先前從此頁面匯出的 CSV。");
       }
@@ -4191,7 +4143,7 @@ function FundLedger() {
       try {
         const tx = parseCsvTransactions(t);
         if (tx.length) {
-          setImportPending({ kind: "csv", transactions: tx, navMap: {}, fundNames: {}, priceHistory: {}, fileName: "貼上的 CSV 文本" });
+          setImportPending(csvImportPayload(tx,"貼上的 CSV 文本"));
           setPasteImportOpen(false);
           setPasteImportText("");
           return;
@@ -4210,15 +4162,15 @@ function FundLedger() {
     if (!importPending) return;
     try {
       const replace = mode === "replace", incoming = importPending;
-      const existingIds = new Set(transactions.map(t => t.id));
-      const nextTransactions = replace ? incoming.transactions : [...transactions, ...incoming.transactions.filter(t => !existingIds.has(t.id))];
-      const nextNav = replace ? incoming.navMap : { ...navMap, ...incoming.navMap };
-      const sources = replace ? {} : { ...navSourceMap };
+      const existingIds = new Set(legacyTransactions.map(t => t.id));
+      const nextTransactions = replace ? incoming.transactions : [...legacyTransactions, ...incoming.transactions.filter(t => !existingIds.has(t.id))];
+      const nextNav = replace ? incoming.navMap : { ...storedNavMap, ...incoming.navMap };
+      const sources = replace ? {} : { ...storedNavSourceMap };
       Object.keys(incoming.navMap || {}).forEach(code => { if (!incoming.navSourceMap?.[code]) delete sources[code]; });
       const nextSources = { ...sources, ...incoming.navSourceMap };
-      const nextNames = replace ? incoming.fundNames : { ...fundNames, ...incoming.fundNames };
-      const nextHistory = replace ? { ...(incoming.priceHistory || {}) } : { ...priceHistory, ...incoming.priceHistory };
-      const nextTracking = replace ? incoming.trackingMap || {} : { ...trackingMap, ...incoming.trackingMap };
+      const nextNames = replace ? incoming.fundNames : { ...storedFundNames, ...incoming.fundNames };
+      const nextHistory = replace ? { ...(incoming.priceHistory || {}) } : { ...storedPriceHistory, ...incoming.priceHistory };
+      const nextTracking = replace ? incoming.trackingMap || {} : { ...storedTrackingMap, ...incoming.trackingMap };
       let nextPlan = replace ? normalizeAllocationPlan(incoming.allocationPlan) : allocationPlan;
       if (!replace && incoming.allocationPlan) {
         const plan = normalizeAllocationPlan(incoming.allocationPlan);
@@ -4233,8 +4185,8 @@ function FundLedger() {
           hist.sort((a,b) => a.date.localeCompare(b.date)); nextHistory[t.fundCode] = hist;
         }
       }
-      const nextV2 = incoming.investmentLedger ? (replace ? InvestmentLedger.normalize(incoming.investmentLedger) : InvestmentLedger.merge(investmentData,incoming.investmentLedger)) : investmentData;
-      const checked = InvestmentLedger.calculate(nextV2, [], {}, localTodayStr());
+      const nextV2 = incoming.investmentLedger ? (replace && incoming.kind!=="csv" ? InvestmentLedger.normalize(incoming.investmentLedger) : InvestmentLedger.merge(investmentData,incoming.investmentLedger)) : investmentData;
+      const checked = InvestmentLedger.calculate(nextV2, nextTransactions, nextNav, localTodayStr());
       if (checked.issues.length) throw Error(checked.issues[0].message);
       const values = { [STORAGE_KEY]:nextTransactions, [NAV_KEY]:nextNav, [NAV_SOURCE_KEY]:nextSources, [FUND_NAMES_KEY]:nextNames, [PRICE_HISTORY_KEY]:nextHistory, [TRACKING_KEY]:nextTracking, [ALLOCATION_PLAN_KEY]:nextPlan };
       if (incoming.investmentLedger) values[INVESTMENT_KEY] = nextV2;
@@ -4280,14 +4232,15 @@ function FundLedger() {
       amount: parseFloat(r.amount) || 0, fee: parseFloat(r.fee) || 0,
       currency: r.currency || DEFAULT_CCY, refNo: r.refNo, note: r.note,
     }));
-    persistTransactions([...transactions, ...newTx]);
+    persistTransactions([...legacyTransactions, ...newTx]);
     newTx.forEach((t) => { if (t.nav) addPricePoint(t.fundCode, t.date, t.nav); });
     const remaining = preview.filter((r) => !r.ok);
     setPreview(remaining);
     if (remaining.length === 0) { setPasteText(""); setPasteOpen(false); }
   }
 
-  const editingRecord = editingId ? transactions.find((t) => t.id === editingId) : null;
+  const editingRow = editingId ? transactions.find(t=>t.id===editingId) : null;
+  const editingRecord = editingRow ? {...editingRow,hkdAmount:editingRow.hkdAmount ?? editingRow.hkd ?? investmentData.legacyHKD[editingRow.sourceId]} : null;
   const okCount = preview.filter((r) => r.ok).length;
 
   // House chip click handler
@@ -4497,15 +4450,10 @@ function FundLedger() {
 
         {error && <div style={s.errorBanner}>{error}</div>}
 
-        {activeTab === "investment" && <InvestmentPage key={account} data={investmentData} onChange={persistInvestment}
-          legacy={transactions} nav={effNavMap} fundNames={fundNames} loadError={investmentLoadError}
-          onBackup={exportBackup} onImport={triggerImport} onLegacy={() => setActiveTab("overview")} onOldBackup={exportPreV2} />}
         {activeTab === "overview" && (
           <>
-          <div style={{ ...s.parseBox, marginBottom: 16 }}>
-            <strong>基金原幣紀錄</strong> · Trade25、美股、換匯及平台月費已移至「港幣回報」。
-            <button style={{...s.ghostBtn, marginLeft: 12}} onClick={() => setActiveTab("investment")}>查看扣費後港幣回報</button>
-          </div>
+          <InvestmentTools key={account} data={investmentData} onChange={persistInvestment}
+            legacy={legacyTransactions} nav={accountingNav()} loadError={investmentLoadError} />
         {pasteOpen && (
           <section style={s.parseBox} className="fl-fade">
             <div style={s.parseHeader}>
@@ -4570,7 +4518,7 @@ function FundLedger() {
               <div style={s.passbookDivider} />
               <div style={s.passbookStub}>
                 <span style={s.stubLabel}>已實現損益 <span style={{ color: "var(--text-faint)", fontSize: 10 }}>›</span></span>
-                <button className="fl-realized-btn" onClick={() => setShowRealizedModal(true)}
+                <button aria-label={`已實現損益明細 ${ccy}`} className="fl-realized-btn" onClick={() => setShowRealizedModal(true)}
                   style={{...s.stubValueMono, color: t.realized >= 0 ? POS_COLOR : NEG_COLOR}}>
                   {t.realized >= 0 ? "+" : ""}{fmtMoney(t.realized, ccy)}
                 </button>
@@ -4647,7 +4595,7 @@ function FundLedger() {
               onClick={() => setActiveFund("__all__")}>全部基金</button>
             {fundCodes.map((c) => (
               <button key={c} className="fl-chip" style={{...s.chip, fontSize: 11, padding: "4px 10px", ...(activeFund === c ? s.chipActive : {})}}
-                onClick={() => setActiveFund(c)}>{fundNames[c] || c}</button>
+                onClick={() => setActiveFund(c)}>{fundNames[c] || displayCode(c)}</button>
             ))}
           </div>
         )}
@@ -4714,7 +4662,8 @@ function FundLedger() {
                 <div key={t.id} style={s.row} className="fl-row fl-fade">
                   <span style={{...s.td, flex: "0 0 82px", color: "var(--text-3)"}}>{t.date}</span>
                   <span style={{...s.td, flex: "0 0 92px"}}>
-                    <div style={{ fontWeight: 500 }}>{t.fundCode}</div>
+                    <div style={{ fontWeight: 500 }}>{displayCode(t.fundCode)}</div>
+                    <div style={{fontSize:10,color:"var(--text-4)"}}>{t.house}</div>
                     {fundNames[t.fundCode] && <div style={{ fontSize: 10.5, color: "var(--text-4)" }}>{fundNames[t.fundCode]}</div>}
                   </span>
                   <span style={{...s.typeBadge, color: meta.color, borderColor: meta.color + "55"}}>{meta.label}</span>
@@ -4727,6 +4676,7 @@ function FundLedger() {
                   <span style={{...s.td, ...s.mono, flex: "1 1 96px", textAlign: "right", fontWeight: 600, whiteSpace: "nowrap",
                     color: t.type === "buy" ? NEG_COLOR : t.type === "sell" ? POS_COLOR : "var(--text)" }}>
                     {fmtMoney(t.amount, t.currency)}
+                    {t.currency !== 'HKD' && <div style={{fontSize:10,fontWeight:400,color:'var(--text-3)'}}>{t.settlement === 'wallet' ? '美元餘額結算' : Number(t.hkdAmount || t.hkd || investmentData.legacyHKD[t.sourceId]) > 0 ? fmtMoney(Number(t.hkdAmount || t.hkd || investmentData.legacyHKD[t.sourceId]),'HKD') : '港幣金額待補'}</div>}
                   </span>
                   {(() => {
                     const pnl = txPnlMap[t.id];
@@ -4796,9 +4746,6 @@ function FundLedger() {
       {/* 底部 Tab 導航 */}
       <nav style={s.tabBar}>
         <div style={{ display: "flex", width: "100%", maxWidth: 920, padding: "0 8px", minWidth: 0 }}>
-        <button className={"fl-tab" + (activeTab === "investment" ? " active" : "")} onClick={() => setActiveTab("investment")}>
-          <Wallet size={20} /> <span>港幣回報</span>
-        </button>
         <button className={"fl-tab" + (activeTab === "overview" ? " active" : "")} onClick={() => setActiveTab("overview")}>
           <Wallet size={20} /> <span>基金紀錄</span>
         </button>
@@ -4815,7 +4762,7 @@ function FundLedger() {
       </nav>
 
       {formOpen && (
-        <TransactionForm initial={editingRecord} fundCodes={fundCodes}
+        <TransactionForm initial={editingRecord} fundCodes={[...new Set(fundCodes.map(displayCode))]}
           onCancel={() => { setFormOpen(false); setEditingId(null); }}
           onSave={saveTransaction}
           onDelete={(id) => deleteTransaction(id)} />
@@ -4833,7 +4780,7 @@ function FundLedger() {
                 ? <>CSV 檔「{importPending.fileName}」可匯入 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？</>
                 : <>備份檔「{importPending.fileName}」內含 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？{importPending.allocationPlan && <>備份內的配置目標、分類及觀察價也會一併還原。</>}</>}
             </p>
-            <p style={{fontSize: 12, color: "var(--text-3)"}}>{importPending.investmentLedger ? `另含 ${importPending.investmentLedger.events.length} 筆美股／現金／費用紀錄。合併時同一識別碼及同平台月份保留目前版本；取代會替換 v2.0 資料。` : "這是舊版／CSV 資料，只匯入基金部分；目前的 v2.0 美股、換匯及費用會保留。"}</p>
+            <p style={{fontSize: 12, color: "var(--text-3)"}}>{importPending.investmentLedger ? `另含 ${importPending.investmentLedger.events.length} 筆美股／現金／費用紀錄。合併時同一識別碼及同平台月份保留目前版本；完整 JSON 取代會替換投資資料；CSV 保留現金及費用。` : "這是舊版／CSV 資料，只匯入基金部分；目前的 v2.0 美股、換匯及費用會保留。"}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
               <button type="button" style={{...s.saveBtn, width: "100%"}} className="fl-btn" onClick={() => confirmImport("merge")}>
                 合併（保留目前資料，加入備份中沒有的紀錄）
@@ -4850,7 +4797,7 @@ function FundLedger() {
 
       {showNameManager && (
         <FundNameModal holdings={holdings} fundNames={fundNames}
-          onSave={persistFundNames}
+          onSave={map=>persistFundNames(scopeMetadata(map,""))}
           onClose={() => setShowNameManager(false)} />
       )}
 
@@ -4858,7 +4805,7 @@ function FundLedger() {
         <PriceHistoryModal fundCode={priceModalFund}
           fundName={fundNames[priceModalFund] || ""}
           priceHistory={priceHistory}
-          onSave={persistPriceHistory}
+          onSave={map=>persistPriceHistory(scopeMetadata(map,[]))}
           onClose={() => setPriceModalFund(null)} />
       )}
 

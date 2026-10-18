@@ -1,8 +1,9 @@
+// Archived v2.0 UI regression. Current unified UI: unified-ui.test.cjs
 const {chromium} = require('playwright');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const E=require('../investment-engine.js');
-const url=process.env.TEST_BASE_URL||'http://127.0.0.1:8768/';
+const url=process.env.TEST_BASE_URL||'http://127.0.0.1:8768/versions/v2.0.0/';
 const out=process.env.TEST_OUTPUT_DIR||'/private/tmp/fund-ledger-v2-qa';
 fs.mkdirSync(out,{recursive:true});
 (async()=>{

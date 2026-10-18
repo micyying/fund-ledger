@@ -49,3 +49,64 @@ const storage={getItem:k=>map.get(k)??null,setItem:(k,v)=>{if(k==='b'&&v==='new-
 assert.throws(()=>E.atomicWrite(storage,{a:'new-a',b:'new-b',c:'new-c'}),/保留/);assert.deepEqual([...map],[['a','old-a'],['b','old-b']]);
 E.atomicWrite(storage,{a:'new-a',b:'new-b'});assert.equal(map.get('b'),'new-b');
 console.log('6 persistence and input-integrity checks passed');
+
+// Platforms separate the same code and currency without altering original records.
+eq(E.ACCOUNTS, {hangseng:'恆生',trade25:'匯豐 Trade25',flexinvest:'匯豐 FlexInvest'});
+eq(E.platformForTransaction({}), 'flexinvest');
+eq(E.platformForTransaction({platformId:'hangseng',account:'trade25'}), 'hangseng');
+eq(E.platformForTransaction({account:'trade25'}), 'trade25');
+eq(E.instrumentKey('hangseng',' SAME ','USD'), 'hangseng:SAME:USD');
+const platformsLegacy=[
+  {...legacy[0],id:'P1',fundCode:'SAME',currency:'USD',platformId:'trade25',hkdAmount:7800},
+  {...legacy[0],id:'P2',fundCode:'SAME',currency:'USD',platformId:'hangseng',hkdAmount:7900},
+  {...legacy[0],id:'P3',fundCode:'SAME',currency:'HKD'},
+];
+const originalPlatforms=JSON.stringify(platformsLegacy);
+r=calc([],{fx,legacyHKD:{P1:9999}},platformsLegacy,{'trade25:SAME:USD':120,'hangseng:SAME:USD':120,'flexinvest:SAME:HKD':120});
+eq(r.holdings.map(h=>h.key).sort(), ['flexinvest:SAME:HKD','hangseng:SAME:USD','trade25:SAME:USD']);
+near(r.accounts.trade25.deposits,7800,'actual record HKD takes precedence over old supplemental amount');
+near(r.accounts.hangseng.deposits,7900,'Hang Seng has its own HKD contribution');
+near(r.accounts.flexinvest.deposits,1000,'unlabeled originals remain FlexInvest');
+near(r.accounts.trade25.net,1500,'Trade25 separate net');
+near(r.accounts.hangseng.net,1400,'Hang Seng separate net');
+near(r.accounts.flexinvest.net,200,'FlexInvest separate net');
+eq(JSON.stringify(platformsLegacy),originalPlatforms);
+
+// Original buy and v2 sell (and the reverse) are one chronological position.
+const mergedOriginal=[{...legacy[0],id:'M1',fundCode:'MERGED',currency:'USD',platformId:'trade25',hkdAmount:7800,fee:2}];
+events=[event('2','sell',{date:'2026-01-01',symbol:'MERGED',units:5,amount:600,fee:1,settlement:'external',hkd:4640})];
+r=calc(events,{fx,quotes:{'trade25:MERGED:USD':{price:125,date:'2026-10-17'}}},mergedOriginal,{MERGED:999});
+eq(r.issues,[]);eq(r.holdings.length,1);near(r.holdings[0].units,5,'cross-store partial sale');near(r.holdings[0].basis,3900,'cross-store average historical basis');near(r.holdings[0].price,125,'canonical quote overrides original NAV');near(r.total.deposits,7800,'cross-store contributions once');near(r.total.net,1683.75,'cross-store portfolio result');
+events=[event('1','buy',{date:'2025-01-01',symbol:'BACK',units:10,amount:1000,fee:2,settlement:'external',hkd:7800})];
+const originalSale=[{...legacy[0],id:'M2',date:'2025-02-01',type:'sell',fundCode:'BACK',currency:'USD',platformId:'trade25',units:10,amount:1100,fee:3,hkdAmount:8500}];
+r=calc(events,{},originalSale);eq(r.issues,[]);near(r.total.net,700,'original sale closes v2 holding');near(r.accounts.trade25.nativeGain.USD,95,'cross-store native fees counted once');near(r.total.assets,0,'fully sold position needs no quote or rate');
+
+// Missing historical HKD remains incomplete, even when current price and FX are known.
+r=calc([], {fx}, [{...mergedOriginal[0],hkdAmount:''}], {MERGED:120});
+eq(r.total.net,null);eq(r.holdings[0].basisKnown,false);eq(r.rows[0].hkdCost,null);
+near(r.accounts.trade25.deposits,0,'never invent historical contribution from valuation rate');
+
+// Original-record trades can settle through funded wallet balances without double contributions.
+events=[event('1','exchange',{date:'2024-12-31',hkd:7800,usd:1000,direction:'toUSD',settlement:'external'})];
+r=calc(events,{fx},[{...mergedOriginal[0],amount:998,fee:2,settlement:'wallet',hkdAmount:''}],{MERGED:120});
+near(r.total.deposits,7800,'original wallet buy uses existing contribution');near(r.accounts.trade25.cash.USD.amount,0,'original wallet buy uses cash');near(r.holdings[0].basis,7800,'original wallet buy inherits FX basis');
+
+// Fee inference sees original Trade25 holdings, but never creates a Hang Seng fee rule.
+const suggested=E.feeSuggestions(E.blank(),'2025-02','2025-02',platformsLegacy);
+eq(suggested.map(x=>x.account),['trade25','flexinvest']);
+eq(suggested.find(x=>x.account==='trade25').amount,25);
+eq(E.trade25Active([], '2025-02', [{...platformsLegacy[1]}]),false);
+// New Hang Seng events use the same normal validation and isolated wallet ledger.
+r=calc([event('1','buy',{account:'hangseng',currency:'HKD',symbol:'HS',units:10,amount:1000,settlement:'external'})],{quotes:{'hangseng:HS:HKD':{price:110,date:'2026-10-17'}}});
+near(r.accounts.hangseng.net,100,'Hang Seng event valuation');near(r.accounts.trade25.net,0,'other account untouched');
+// Unified manual NAV is authoritative for both stores, including v2-only holdings.
+r=calc([event('1','buy',{symbol:'NAV',units:10,amount:1000,settlement:'external',hkd:7800})],{fx,quotes:{'trade25:NAV:USD':{price:100,date:'2026-10-17'}}},[],{'trade25:NAV:USD':120});
+near(r.holdings[0].price,120,'canonical manual NAV overrides stale v2 quote');near(r.total.net,1500,'v2-only holding accepts unified manual NAV');
+r=calc([],{fx},[{...platformsLegacy[0],currency:'HKD',hkdAmount:''},platformsLegacy[1]],{SAME:120});
+eq(r.total.net,null);eq(r.holdings.every(h=>h.price===null),true);
+r=calc([],{fx},platformsLegacy.slice(0,2),{SAME:120});
+near(r.holdings[0].price,120,'unambiguous currency keeps original NAV compatibility');near(r.holdings[1].price,120,'same currency can share original price across platforms');
+r=calc([],{fx},[{...platformsLegacy[0],currency:'HKD',hkdAmount:''},{...platformsLegacy[0],id:'P4'}],{'trade25:SAME:HKD':120,'trade25:SAME:USD':130});
+eq(r.holdings.map(h=>h.key).sort(),['trade25:SAME:HKD','trade25:SAME:USD']);near(r.holdings.find(h=>h.currency==='HKD').price,120,'same platform HKD quote isolated');near(r.holdings.find(h=>h.currency==='USD').price,130,'same platform USD quote isolated');
+eq(E.normalize({...E.blank(),events:[event('1','buy',{symbol:'REF',units:1,amount:100,settlement:'external',hkd:780,refNo:'BANK-123'})]}).events[0].refNo,'BANK-123');
+console.log(`${checks} investment accounting checks passed, including unified platforms and historical FX`);
