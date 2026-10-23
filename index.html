@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Micy致富計畫 — Fund Ledger</title>
+<title>Micy致富計畫 v2.1 — 基金與匯率紀錄</title>
 <link rel="icon" type="image/png" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
 <link rel="icon" type="image/svg+xml" href="./micy-icon.svg" data-github-icon="filled-svg">
 <link rel="apple-touch-icon" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
@@ -117,6 +117,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
 </head>
 <body>
 <div id="root"></div>
+<script src="./fx-ledger.js?v=2.1-fx-20261023"></script>
+<link rel="stylesheet" href="./fx-ledger.css?v=2.1-fx-20261023">
+<script type="text/babel" src="./fx-ledger-ui.jsx?v=2.1-fx-20261023"></script>
 <script type="text/babel">
 
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
@@ -329,12 +332,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v1.7.1";
-const APP_RELEASE_DATE = "2026-10-16";
+const APP_VERSION = "v2.1";
+const APP_RELEASE_DATE = "2026-10-23";
 const APP_CHANGES = [
-  "持倉截圖會自動配對帳本基金，支援簡繁體、恆／恒、匯／滙／汇、官方名稱與常見簡稱。",
-  "已配對的有效項目會自動勾選，可直接批次更新淨值；配錯時仍可改選基金或取消該列。",
-  "單位數或價格差異改為提示，不再要求逐檔勾選；幣別不符和重複配對仍會攔截。截圖只在本機辨識。",
+  "以 v1.7.1 為底，保留原基金介面，新增獨立「匯率紀錄」分頁。",
+  "記錄人民幣、美元、日圓的實際換匯成本；回憶參考與已核實交易分開。",
+  "比較報價與個人歷史成本，另可取得有日期的每日市場參考；支援匯率及完整 JSON 備份。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -3313,6 +3316,7 @@ function FundResearch({ holdings, fundNames, account, profiles, checkedAt, resea
 // Main App
 // ---------------------------------------------------------------------------
 function FundLedger() {
+  const [fxRevision,setFxRevision]=useState(0);
   const [transactions, setTransactions] = useState([]);
   const [navMap, setNavMap] = useState({});
   const [navSourceMap, setNavSourceMap] = useState({});
@@ -3974,7 +3978,9 @@ function FundLedger() {
   }
 
   function exportBackup() {
-    const payload = { exportedAt: new Date().toISOString(), version: 6, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
+    let fxJournal;
+    try { fxJournal=FXLedger.load(localStorage,acctKey('fxJournalV1')); } catch(e) {setError('未匯出：匯率資料格式需先核對，原資料仍保留。'+e.message);return;}
+    const payload = { exportedAt: new Date().toISOString(), version: 8, appVersion:APP_VERSION, release:'fx-journal-20261023', fxJournal, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
@@ -4034,7 +4040,7 @@ function FundLedger() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data.transactions)) throw new Error("格式不正確");
-        setImportPending({ transactions: data.transactions, navMap: data.navMap || {}, navSourceMap: data.navSourceMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
+        setImportPending({ fxJournal:data.fxJournal===undefined?undefined:FXLedger.normalize(data.fxJournal), transactions: data.transactions, navMap: data.navMap || {}, navSourceMap: data.navSourceMap || {}, fundNames: data.fundNames || {}, priceHistory: data.priceHistory || {}, trackingMap: data.trackingMap || null, allocationPlan: data.allocationPlan || null, fileName: file.name });
       } catch (err) {
         setError("這個備份檔案無法讀取，請確認是先前從此頁面下載的 JSON 備份。");
       }
@@ -4130,6 +4136,7 @@ function FundLedger() {
         if (!Array.isArray(tx)) throw new Error("no transactions");
         setImportPending({
           kind: "backup",
+          fxJournal:data.fxJournal===undefined?undefined:FXLedger.normalize(data.fxJournal),
           transactions: tx,
           navMap: data.navMap || {},
           navSourceMap: data.navSourceMap || {},
@@ -4165,62 +4172,26 @@ function FundLedger() {
   }
 
   function confirmImport(mode) {
-    if (!importPending) return;
-    if (mode === "replace") {
-      persistTransactions(importPending.transactions);
-      persistNav(importPending.navMap);
-      persistNavSource(importPending.navSourceMap || {});
-      persistFundNames(importPending.fundNames);
-      if (importPending.priceHistory) persistPriceHistory(importPending.priceHistory);
-      if (importPending.trackingMap) persistTracking(importPending.trackingMap);
-      persistAllocationPlan(importPending.allocationPlan || defaultAllocationPlan());
-    } else {
-      const existingIds = new Set(transactions.map((t) => t.id));
-      const merged = [...transactions, ...importPending.transactions.filter((t) => !existingIds.has(t.id))];
-      persistTransactions(merged);
-      persistNav({ ...navMap, ...importPending.navMap });
-      const mergedSources = { ...navSourceMap };
-      Object.keys(importPending.navMap || {}).forEach((code) => {
-        if (!importPending.navSourceMap?.[code]) delete mergedSources[code];
-      });
-      persistNavSource({ ...mergedSources, ...importPending.navSourceMap });
-      persistFundNames({ ...fundNames, ...importPending.fundNames });
-      if (importPending.priceHistory) persistPriceHistory({ ...priceHistory, ...importPending.priceHistory });
-      if (importPending.trackingMap) persistTracking({ ...trackingMap, ...importPending.trackingMap });
-      if (importPending.allocationPlan) {
-        const incoming = normalizeAllocationPlan(importPending.allocationPlan);
-        persistAllocationPlan({
-          targets: incoming.targets,
-          fundCategories: { ...allocationPlan.fundCategories, ...incoming.fundCategories },
-          recoveryNav: { ...allocationPlan.recoveryNav, ...incoming.recoveryNav },
-          fxToHKD: { ...allocationPlan.fxToHKD, ...incoming.fxToHKD },
-        });
-      }
-    }
-    // CSV 沒有獨立價格歷史，但成交價可同步進淨值走勢圖（與「貼上交易」一致）
-    if (importPending.kind === "csv") {
-      const additions = {};
-      importPending.transactions.forEach((t) => {
-        if (t.nav && t.fundCode && t.date) {
-          (additions[t.fundCode] = additions[t.fundCode] || []).push({ date: t.date, price: t.nav });
-        }
-      });
-      setPriceHistory((prev) => {
-        const next = mode === "replace" ? {} : { ...prev };
-        Object.entries(additions).forEach(([code, recs]) => {
-          const hist = next[code] ? [...next[code]] : [];
-          recs.forEach((rec) => {
-            const i = hist.findIndex((x) => x.date === rec.date);
-            if (i >= 0) hist[i] = rec; else hist.push(rec);
-          });
-          hist.sort((a, b) => (a.date < b.date ? -1 : 1));
-          next[code] = hist;
-        });
-        try { storage.set(PRICE_HISTORY_KEY, JSON.stringify(next)); } catch (e) {}
-        return next;
-      });
-    }
-    setImportPending(null);
+    if(!importPending)return;
+    try {
+      const incoming=importPending,replace=mode==='replace';
+      const ids=new Set(transactions.map(t=>t.id));
+      const nextTx=replace?incoming.transactions:[...transactions,...incoming.transactions.filter(t=>!ids.has(t.id))];
+      const nextNav=replace?incoming.navMap:{...navMap,...incoming.navMap};
+      const nextSources=replace?{}:{...navSourceMap};
+      Object.keys(incoming.navMap||{}).forEach(code=>{if(!incoming.navSourceMap?.[code])delete nextSources[code];});
+      Object.assign(nextSources,incoming.navSourceMap||{});
+      const nextNames=replace?incoming.fundNames:{...fundNames,...incoming.fundNames};
+      const nextHistory=replace?{...(incoming.priceHistory||{})}:{...priceHistory,...incoming.priceHistory};
+      const nextTracking=replace?(incoming.trackingMap||{}):{...trackingMap,...incoming.trackingMap};
+      let nextPlan=replace?normalizeAllocationPlan(incoming.allocationPlan||defaultAllocationPlan()):allocationPlan;
+      if(!replace&&incoming.allocationPlan){const plan=normalizeAllocationPlan(incoming.allocationPlan);nextPlan={targets:plan.targets,fundCategories:{...allocationPlan.fundCategories,...plan.fundCategories},recoveryNav:{...allocationPlan.recoveryNav,...plan.recoveryNav},fxToHKD:{...allocationPlan.fxToHKD,...plan.fxToHKD}};}
+      if(incoming.kind==='csv')for(const t of incoming.transactions){if(!t.nav||!t.fundCode||!t.date)continue;const hist=[...(nextHistory[t.fundCode]||[])],i=hist.findIndex(p=>p.date===t.date),point={date:t.date,price:t.nav};if(i>=0)hist[i]=point;else hist.push(point);nextHistory[t.fundCode]=hist.sort((a,b)=>a.date.localeCompare(b.date));}
+      const values={[STORAGE_KEY]:nextTx,[NAV_KEY]:nextNav,[NAV_SOURCE_KEY]:nextSources,[FUND_NAMES_KEY]:nextNames,[PRICE_HISTORY_KEY]:nextHistory,[TRACKING_KEY]:nextTracking,[ALLOCATION_PLAN_KEY]:nextPlan};
+      if(incoming.fxJournal!==undefined)values.fxJournalV1=replace?FXLedger.normalize(incoming.fxJournal):FXLedger.merge(FXLedger.load(localStorage,acctKey('fxJournalV1')),incoming.fxJournal);
+      FXLedger.atomicWrite(localStorage,Object.fromEntries(Object.entries(values).map(([k,v])=>[acctKey(k),JSON.stringify(v)])));
+      setTransactions(nextTx);setNavMap(nextNav);setNavSourceMap(nextSources);setFundNames(nextNames);setPriceHistory(nextHistory);setTrackingMap(nextTracking);setAllocationPlan(nextPlan);setFxRevision(n=>n+1);setImportPending(null);setError('');
+    }catch(e){setError('未匯入：'+e.message);}
   }
 
   function runParse(initialText) {
@@ -4473,6 +4444,7 @@ function FundLedger() {
         </header>
 
         {error && <div style={s.errorBanner}>{error}</div>}
+        {activeTab === "fx" && <window.FXPage key={`${account}:${fxRevision}`} account={account} onFullBackup={exportBackup} onFullImport={triggerImport}/>}
 
         {activeTab === "overview" && (
           <>
@@ -4769,6 +4741,9 @@ function FundLedger() {
         <button className={"fl-tab" + (activeTab === "overview" ? " active" : "")} onClick={() => setActiveTab("overview")}>
           <Wallet size={20} /> <span>資產總覽</span>
         </button>
+        <button className={"fl-tab" + (activeTab === "fx" ? " active" : "")} onClick={() => setActiveTab("fx")}>
+          <span aria-hidden="true" style={{fontSize:20,lineHeight:'20px'}}>⇄</span><span>匯率紀錄</span>
+        </button>
         <button className={"fl-tab" + (activeTab === "calendar" ? " active" : "")} onClick={() => setActiveTab("calendar")}>
           <Calendar size={20} /> <span>收益日曆</span>
         </button>
@@ -4800,6 +4775,7 @@ function FundLedger() {
                 ? <>CSV 檔「{importPending.fileName}」可匯入 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？</>
                 : <>備份檔「{importPending.fileName}」內含 {importPending.transactions.length} 筆交易紀錄。<br />目前帳本已有 {transactions.length} 筆紀錄，要如何處理？{importPending.allocationPlan && <>備份內的配置目標、分類及觀察價也會一併還原。</>}</>}
             </p>
+            <p style={{fontSize:12,color:'var(--text-3)'}}>{importPending.fxJournal!==undefined?`另含 ${importPending.fxJournal.records.length} 筆匯率紀錄；取代會一併替換。`:'這份備份不含匯率紀錄，目前的匯率資料會保留。'}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
               <button type="button" style={{...s.saveBtn, width: "100%"}} className="fl-btn" onClick={() => confirmImport("merge")}>
                 合併（保留目前資料，加入備份中沒有的紀錄）
