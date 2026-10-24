@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Micy致富計畫 v2.1 — 基金與匯率紀錄</title>
+<title>Micy致富計畫 v2.2 — 基金與匯率紀錄</title>
 <link rel="icon" type="image/png" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
 <link rel="icon" type="image/svg+xml" href="./micy-icon.svg" data-github-icon="filled-svg">
 <link rel="apple-touch-icon" sizes="180x180" href="./micy-icon.png" data-github-icon="filled">
@@ -117,9 +117,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
 </head>
 <body>
 <div id="root"></div>
-<script src="./fx-ledger.js?v=2.1-fx-20261023"></script>
-<link rel="stylesheet" href="./fx-ledger.css?v=2.1-fx-20261023">
-<script type="text/babel" src="./fx-ledger-ui.jsx?v=2.1-fx-20261023"></script>
+<script src="./fx-ledger.js?v=2.2-fx-20261024"></script>
+<link rel="stylesheet" href="./fx-ledger.css?v=2.2-fx-20261024">
+<script type="text/babel" src="./fx-ledger-ui.jsx?v=2.2-fx-20261024"></script>
 <script type="text/babel">
 
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
@@ -332,12 +332,12 @@ function CollapsibleSection({ title, defaultOpen = true, right, children, s }) {
 // Constants
 // ---------------------------------------------------------------------------
 const APP_CHANNEL = "GitHub版";
-const APP_VERSION = "v2.1";
-const APP_RELEASE_DATE = "2026-10-23";
+const APP_VERSION = "v2.2";
+const APP_RELEASE_DATE = "2026-10-24";
 const APP_CHANGES = [
-  "以 v1.7.1 為底，保留原基金介面，新增獨立「匯率紀錄」分頁。",
-  "記錄人民幣、美元、日圓的實際換匯成本；回憶參考與已核實交易分開。",
-  "比較報價與個人歷史成本，另可取得有日期的每日市場參考；支援匯率及完整 JSON 備份。",
+  "匯率試算改為雙欄計算機，個人基準精簡為平均、最低及上次成本。",
+  "新增換匯精簡必填資料，銀行提供中國銀行、匯豐、恆生選單。",
+  "備份統一由資產總覽下載，包含基金與換匯紀錄。",
 ];
 // 僅為公開的基金公司月報快照；不包含使用者的交易或持倉金額。
 // 官方 PDF 連結可能更新，頁內數字始終以 asOf 標示的月份為準。
@@ -3980,7 +3980,7 @@ function FundLedger() {
   function exportBackup() {
     let fxJournal;
     try { fxJournal=FXLedger.load(localStorage,acctKey('fxJournalV1')); } catch(e) {setError('未匯出：匯率資料格式需先核對，原資料仍保留。'+e.message);return;}
-    const payload = { exportedAt: new Date().toISOString(), version: 8, appVersion:APP_VERSION, release:'fx-journal-20261023', fxJournal, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
+    const payload = { exportedAt: new Date().toISOString(), version: 8, appVersion:APP_VERSION, release:'fx-journal-20261024', fxJournal, transactions, navMap, navSourceMap, fundNames, priceHistory, trackingMap, allocationPlan };
     const content = JSON.stringify(payload, null, 2);
     downloadFile(content, `基金交易簿備份-${todayStr()}.json`, "application/json");
     showExport(content, "JSON 備份內容（可複製）");
@@ -4444,7 +4444,7 @@ function FundLedger() {
         </header>
 
         {error && <div style={s.errorBanner}>{error}</div>}
-        {activeTab === "fx" && <window.FXPage key={`${account}:${fxRevision}`} account={account} onFullBackup={exportBackup} onFullImport={triggerImport}/>}
+        {activeTab === "fx" && <window.FXPage key={`${account}:${fxRevision}`} account={account}/>}
 
         {activeTab === "overview" && (
           <>
