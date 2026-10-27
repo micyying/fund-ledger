@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-10-26",
+  "checkedAt": "2026-10-27",
   "funds": {
     "U50005": {
       "title": "恒生指數基金",
@@ -100,64 +100,64 @@
     },
     "U50004": {
       "title": "滙豐環球股票指數基金",
-      "asOf": "2026-08-31",
+      "asOf": "2026-09-30",
       "source": "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50004_en.pdf",
       "holdings": [
         [
           "NVIDIA",
-          5.43
+          5.67
         ],
         [
           "Apple",
-          4.98
+          5.28
         ],
         [
           "Microsoft",
-          3.83
+          3.9
         ],
         [
           "Alphabet",
-          3.8
+          3.9
         ],
         [
           "Amazon",
-          2.7
+          2.6
         ],
         [
-          "Broadcom",
-          1.79
+          "Meta Platforms Inc",
+          1.72
         ]
       ],
       "watch": "月報顯示美國股票比重較高；留意大型科技公司業績、美元與全球利率。"
     },
     "U50009": {
       "title": "滙豐美國股票指數基金",
-      "asOf": "2026-08-31",
+      "asOf": "2026-09-30",
       "source": "https://www.hfi.hsbc.com.hk/data/hk/invest/unit/ut_fs_u50009_en.pdf",
       "holdings": [
         [
           "NVIDIA",
-          8.01
+          8.27
         ],
         [
           "Apple",
-          6.97
+          7.27
         ],
         [
           "Microsoft",
-          5.64
+          5.7
         ],
         [
           "Alphabet",
-          5.36
+          5.44
         ],
         [
           "Amazon",
-          3.81
+          3.66
         ],
         [
           "Broadcom",
-          2.63
+          2.5
         ]
       ],
       "watch": "追蹤標普 500 指數；留意美國大型科技公司業績、聯儲局政策與美債收益率。"
